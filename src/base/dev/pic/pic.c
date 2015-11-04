@@ -1,20 +1,12 @@
 #include <stdio.h>
 #include <inttypes.h>
 #include "config.h"
-#include "port.h"
-#include "hlt.h"
 #include "bitops.h"
-#include "mhpdbg.h"
-#include "memory.h"
 #include <sys/time.h>
-#include "cpu.h"
 #include "emu.h"
-#include "timers.h"
 #include "iodev.h"
 #include "dpmi.h"
 #include "serial.h"
-#include "int.h"
-#include "ipx.h"
 #include "pic.h"
 
 static void pic_activate(void);

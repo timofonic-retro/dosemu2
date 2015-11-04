@@ -21,18 +21,6 @@ unsigned long pic_irq_list[] = {PIC_IRQ0,  PIC_IRQ1,  PIC_IRQ9,  PIC_IRQ3,
 hitimer_t pic_dos_time;     /* dos time of last interrupt,1193047/sec.*/
 hitimer_t pic_sys_time;     /* system time set by pic_watch */
 
-/*
- * pic_pirr contains a bit set for each interrupt which has attempted to
- * re-trigger.
- *
- * pic_icount is an attempt to count active interrupts.  Pending (pic_pirr)
- * interrupts are released when pic_icount gets back to zero (as designed).
- * Haven't looked how it is now, this is one thing others have played with.
- *
- * pic_watch() has the primary job of releasing interrupts when a stack switch
- * occurs.
- */
-
 /* PIC "registers", plus a few more */
 
 static unsigned long pic_irr;          /* interrupt request register */
@@ -48,7 +36,7 @@ static unsigned int pic_dpmi_count = 0;   /* count of times 'round the dpmi loop
 static unsigned long pic1_mask = 0x07f8; /* bits set for pic1 levels */
 static unsigned long   pic_smm = 0;      /* 32=>special mask mode, 0 otherwise */
 
-static unsigned long   pic_pirr;         /* pending requests: ->irr when icount==0 */
+static unsigned char pic_pirr[32];         /* pending requests: ->irr when icount==0 */
 
 static   hitimer_t pic_ltime[33] =     /* timeof last pic request honored */
                 {NEVER, NEVER, NEVER, NEVER, NEVER, NEVER, NEVER, NEVER,
@@ -513,20 +501,13 @@ static void do_irq(int ilevel)
  */
 int pic_request(int inum)
 {
-static char buf[81];
+  static char buf[81];
   int ret=PIC_REQ_NOP;
 
-  if ((pic_irr|pic_isr)&(1<<inum))
-    {
-    if (pic_pirr&(1<<inum)){
-     ret=PIC_REQ_LOST;
-     pic_print(2,"Requested irq lvl ",    inum, " lost     ");
-      }
-    else {
-     ret=PIC_REQ_PEND;
-     pic_print(2,"Requested irq lvl ",    inum, " pending  ");
-      }
-    pic_pirr|=(1<<inum);
+  if ((pic_irr | pic_isr) & (1 << inum)) {
+    ret = PIC_REQ_PEND;
+    r_printf("Requested irq lvl %i pending (%i queued)", inum, pic_pirr[inum]);
+    pic_pirr[inum]++;
     if(pic_itime[inum] == pic_ltime[inum]) {
        pic_print(2,"pic_itime and pic_ltime for timer ",inum," matched!");
        pic_itime[inum] = pic_itime[32];
@@ -551,10 +532,14 @@ static char buf[81];
 
 void pic_untrigger(int inum)
 {
-    if ((pic_irr | pic_pirr) & (1<<inum)) {
+    if (pic_pirr[inum]) {
+	dosemu_error("pic_untrigger with pending irq %i\n", inum);
+	pic_pirr[inum] = 0;
+	return;
+    }
+    if (pic_irr & (1<<inum)) {
       pic_print(2,"Requested irq lvl ", inum, " untriggered");
     }
-    pic_pirr &= ~(1<<inum);
     pic_irr &= ~(1<<inum);
 }
 
@@ -624,10 +609,14 @@ int pic_irq_masked(int num)
 static void pic_activate(void)
 {
   hitimer_t earliest;
-  int timer, count;
-  unsigned pic_newirr = pic_pirr & ~(pic_irr | pic_isr);
-  pic_irr |= pic_newirr;
-  pic_pirr &= ~pic_newirr;
+  int timer, count, i;
+
+  for (i = 0; i < 32; i++) {
+    if (pic_pirr[i] && !((pic_irr | pic_isr) & (1 << i))) {
+      pic_pirr[i]--;
+      pic_request(i);
+    }
+  }
 
 /*if(pic_irr&~pic_imr) return;*/
    earliest = pic_sys_time;

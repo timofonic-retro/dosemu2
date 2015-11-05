@@ -532,11 +532,7 @@ int pic_request(int inum)
 
 void pic_untrigger(int inum)
 {
-    if (pic_pirr[inum]) {
-	dosemu_error("pic_untrigger with pending irq %i\n", inum);
-	pic_pirr[inum] = 0;
-	return;
-    }
+    pic_pirr[inum] = 0;
     if (pic_irr & (1<<inum)) {
       pic_print(2,"Requested irq lvl ", inum, " untriggered");
     }

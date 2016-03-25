@@ -438,7 +438,8 @@ static int adjust_font_size(int vga_font_height)
  * -- 1998/04/04 sw
  */
 
-boolean set_video_mode(int mode) {
+boolean set_video_mode(int mode)
+{
   vga_mode_info *vmi;
   int clear_mem = 1;
   unsigned u;
@@ -561,8 +562,10 @@ boolean set_video_mode(int mode) {
       WRITE_WORD(BIOS_VIDEO_MEMORY_USED, page_size);
     }
     WRITE_WORD(BIOS_FONT_HEIGHT, vga_font_height);
-    WRITE_BYTE(BIOS_ROWS_ON_SCREEN_MINUS_1, li - 1);
-    WRITE_WORD(BIOS_SCREEN_COLUMNS, co);
+    if (Video->setmode != NULL) {
+      WRITE_BYTE(BIOS_ROWS_ON_SCREEN_MINUS_1, li - 1);
+      WRITE_WORD(BIOS_SCREEN_COLUMNS, co);
+    }
   }
   set_cursor_shape(mode == 7 ? 0x0b0d : 0x0607);
 

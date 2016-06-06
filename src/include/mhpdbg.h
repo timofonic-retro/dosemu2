@@ -64,7 +64,7 @@ struct mhpdbg
    int nbytes;
    int active;
    int flags;
-   int fdin,fdout;
+   int fd;
 
    unsigned char intxxtab[32];
 };

@@ -19,7 +19,9 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <fcntl.h>
 #include <assert.h>
 
@@ -35,6 +37,10 @@
 #define MHP_PRIVATE
 #include "mhpdbg.h"
 
+#define USE_ABSTRACT_SOCKETS 1
+
+#define DOSEMU_SKT "dosemu.dbg"
+
 struct mhpdbg mhpdbg;
 unsigned long dosdebug_flags;
 
@@ -49,24 +55,23 @@ static char mhp_banner[] = {
 };
 struct mhpdbgc mhpdbgc ={0};
 
+static int listener_fd;
+
 /********/
 /* CODE */
 /********/
 
 static void mhp_puts(char* s)
-
 {
-   for (;;){
-	   if (*s == 0x00)
-		   break;
-	   mhp_putc (*s++);
-   }
+  for (;;) {
+    if (*s == 0x00)
+      break;
+    mhp_putc (*s++);
+  }
 }
 
 void mhp_putc(char c1)
-
 {
-
 #if 0
    if (c1 == '\n') {
       mhpdbg.sendbuf[mhpdbg.sendptr] = '\r';
@@ -82,32 +87,30 @@ void mhp_putc(char c1)
 
 void mhp_send(void)
 {
-   if ((mhpdbg.sendptr) && (mhpdbg.fdout == -1)) {
+   if ((mhpdbg.sendptr) && (mhpdbg.fd == -1)) {
       mhpdbg.sendptr = 0;
       return;
    }
-   if ((mhpdbg.sendptr) && (mhpdbg.fdout != -1)) {
-      write (mhpdbg.fdout, mhpdbg.sendbuf, mhpdbg.sendptr);
+   if ((mhpdbg.sendptr) && (mhpdbg.fd != -1)) {
+      write (mhpdbg.fd, mhpdbg.sendbuf, mhpdbg.sendptr);
       mhpdbg.sendptr = 0;
    }
 }
 
-static  char *pipename_in, *pipename_out;
-
 void mhp_close(void)
 {
-   if (mhpdbg.fdin == -1) return;
+   if (mhpdbg.fd == -1) return;
    if (mhpdbg.active) {
      mhp_putc(1); /* tell debugger terminal to also quit */
      mhp_send();
    }
-   remove_from_io_select(mhpdbg.fdin);
-   unlink(pipename_in);
-   free(pipename_in);
-   unlink(pipename_out);
-   free(pipename_out);
-   mhpdbg.fdin = mhpdbg.fdout = -1;
+   remove_from_io_select(mhpdbg.fd);
+   close(mhpdbg.fd);
+   mhpdbg.fd = -1;
    mhpdbg.active = 0;
+
+   mhpdbg.sendptr = 0;
+   mhpdbg.nbytes = 0;
 }
 
 static int wait_for_debug_terminal = 0;
@@ -132,66 +135,112 @@ static void mhp_input_async(void *arg)
   mhp_input();
 }
 
+static void mhp_accept_async(void *arg)
+{
+  size_t num;
+
+  mhpdbg.fd = accept(listener_fd, NULL, NULL);
+  if (mhpdbg.fd < 0) {
+    fprintf(stderr, "Can't accept on socket, dosdebug not available\n");
+    return;
+  }
+
+#ifdef USE_ABSTRACT_SOCKETS
+
+  struct ucred ucred;
+  socklen_t uclen = sizeof(struct ucred);
+
+  if (getsockopt(mhpdbg.fd, SOL_SOCKET, SO_PEERCRED, &ucred, &uclen) == -1) {
+    fprintf(stderr, "Can't get client credentials, dosdebug not available\n");
+    shutdown(mhpdbg.fd, SHUT_RDWR);
+    close(mhpdbg.fd);
+    mhpdbg.fd = -1;
+    return;
+  }
+
+  if (!((ucred.uid == 0) || ucred.uid == getuid())) {
+    fprintf(stderr, "Incorrect client credentials, dosdebug not available\n");
+    shutdown(mhpdbg.fd, SHUT_RDWR);
+    close(mhpdbg.fd);
+    mhpdbg.fd = -1;
+    return;
+  }
+
+#endif
+
+  add_to_io_select(mhpdbg.fd, mhp_input_async, NULL);
+
+  num = send(mhpdbg.fd, mhp_banner, strlen(mhp_banner), MSG_EOR);
+  if (num != strlen(mhp_banner))
+    fprintf(stderr, "Short write of dosdebug banner\n");
+}
+
+
 static void mhp_init(void)
 {
-  int retval;
+  struct sockaddr_un local;
+  socklen_t len;
+  pid_t pid = getpid();
 
-  mhpdbg.fdin = mhpdbg.fdout = -1;
+  listener_fd = socket(AF_UNIX, SOCK_SEQPACKET, 0);
+  mhpdbg.fd = -1;
+
+  local.sun_family = AF_UNIX;
+
+#ifdef USE_ABSTRACT_SOCKETS
+
+  snprintf(local.sun_path, sizeof(local.sun_path)-1, "@%s.%d",
+           DOSEMU_SKT, pid);
+  local.sun_path[sizeof(local.sun_path)-1] = '\0';
+  len = offsetof(struct sockaddr_un, sun_path) + strlen(local.sun_path);
+  local.sun_path[0] = '\0';
+
+  fprintf(stderr, "socket name is @%s\n", local.sun_path+1);
+
+#else
+
+  snprintf(local.sun_path, sizeof(local.sun_path)-1, "/var/run/user/%d/%s.%d",
+           getuid(), DOSEMU_SKT, pid);
+  local.sun_path[sizeof(local.sun_path)-1] = '\0';
+  len = offsetof(struct sockaddr_un, sun_path) + 1 + strlen(local.sun_path);
+
+  fprintf(stderr, "socket name is %s\n", local.sun_path);
+
+#endif
+
+  if (bind(listener_fd, (struct sockaddr *)&local, len) == -1) {
+    fprintf(stderr, "Can't bind socket, dosdebug not available\n");
+    return;
+  }
+
+  if (listen(listener_fd, 1) == -1) {
+    fprintf(stderr, "Can't listen on socket, dosdebug not available\n");
+    return;
+  }
+
   mhpdbg.active = 0;
   mhpdbg.sendptr = 0;
+
+  add_to_io_select(listener_fd, mhp_accept_async, NULL);
 
   memset(&mhpdbg.intxxtab, 0, sizeof(mhpdbg.intxxtab));
   memset(&mhpdbgc.intxxalt, 0, sizeof(mhpdbgc.intxxalt));
 
-  retval = asprintf(&pipename_in, "%s/dosemu.dbgin.%d", RUNDIR, getpid());
-  assert(retval != -1);
-
-  retval = asprintf(&pipename_out, "%s/dosemu.dbgout.%d", RUNDIR, getpid());
-  assert(retval != -1);
-
-  retval = mkfifo(pipename_in, S_IFIFO | 0600);
-  if (!retval) {
-    retval = mkfifo(pipename_out, S_IFIFO | 0600);
-    if (!retval) {
-      mhpdbg.fdin = open(pipename_in, O_RDONLY | O_NONBLOCK);
-      if (mhpdbg.fdin != -1) {
-        /* NOTE: need to open read/write else O_NONBLOCK would fail to open */
-        mhpdbg.fdout = open(pipename_out, O_RDWR | O_NONBLOCK);
-        if (mhpdbg.fdout != -1) {
-          add_to_io_select(mhpdbg.fdin, mhp_input_async, NULL);
-        }
-        else {
-          close(mhpdbg.fdin);
-          mhpdbg.fdin = -1;
-        }
-      }
-    }
-  }
-  else {
-    fprintf(stderr, "Can't create debugger pipes, dosdebug not available\n");
-  }
-  if (mhpdbg.fdin == -1) {
-    unlink(pipename_in);
-    free(pipename_in);
-    unlink(pipename_out);
-    free(pipename_out);
-  }
-  else {
-    if (dosdebug_flags) {
-      /* don't fiddle with select, just poll until the terminal
-       * comes up to send the first input
-       */
-       mhpdbg.nbytes = -1;
-       wait_for_debug_terminal = 1;
-       mhp_input();
-    }
+  if (dosdebug_flags) {
+    /* don't fiddle with select, just poll until the terminal
+     * comes up to send the first input
+     */
+     mhpdbg.nbytes = -1;
+     wait_for_debug_terminal = 1;
+     mhp_input();
+     mhpdbgc.stopped = 1;
   }
 }
 
 void mhp_input()
 {
-  if (mhpdbg.fdin == -1) return;
-  mhpdbg.nbytes = read(mhpdbg.fdin, mhpdbg.recvbuf, SRSIZE);
+  if (mhpdbg.fd == -1) return;
+  mhpdbg.nbytes = read(mhpdbg.fd, mhpdbg.recvbuf, SRSIZE);
   if (mhpdbg.nbytes == -1) return;
   if (mhpdbg.nbytes == 0 && !wait_for_debug_terminal) {
     if (mhpdbgc.stopped) {
@@ -223,7 +272,7 @@ static void mhp_poll_loop(void)
       mhpdbgc.stopped = 1;
       coopth_run();
       mhpdbgc.stopped = ostopped;
-      /* NOTE: if there is input on mhpdbg.fdin, as result of handle_signals
+      /* NOTE: if there is input on mhpdbg.fd, as result of handle_signals
        *       io_select() is called and this then calls mhp_input.
        *       ( all clear ? )
        */
@@ -244,14 +293,12 @@ static void mhp_poll_loop(void)
         if (traceloop) { traceloop=loopbuf[0]=0; }
       }
       if ((mhpdbg.recvbuf[0] == 'q') && (mhpdbg.recvbuf[1] <= ' ')) {
-	 if (mhpdbgc.stopped) {
-	   mhp_cmd("g");
-	   mhp_send();
-	 }
-	 mhpdbg.active = 0;
-	 mhpdbg.sendptr = 0;
-         mhpdbg.nbytes = 0;
-         break;
+        if (mhpdbgc.stopped) {
+          mhp_cmd("g");
+          mhp_send();
+        }
+        mhp_close();
+        break;
       }
       mhpdbg.recvbuf[mhpdbg.nbytes] = 0x00;
       ptr = (char *)mhpdbg.recvbuf;
@@ -292,7 +339,6 @@ static void mhp_poll(void)
     /* new session has started */
     mhpdbg.active++;
 
-    mhp_printf ("%s", mhp_banner);
     mhp_cmd("rmapfile");
     mhp_send();
     mhp_poll_loop();
@@ -337,7 +383,7 @@ void mhp_intercept_log(char *flags, int temporary)
 
 void mhp_intercept(char *msg, char *logflags)
 {
-   if (!mhpdbg.active || (mhpdbg.fdin == -1)) return;
+   if (!mhpdbg.active || (mhpdbg.fd == -1)) return;
    mhpdbgc.stopped = 1;
    mhpdbgc.want_to_stop = 0;
    traceloop = 0;
@@ -357,7 +403,7 @@ void mhp_intercept(char *msg, char *logflags)
 void mhp_exit_intercept(int errcode)
 {
    char buf[255];
-   if (!errcode || !mhpdbg.active || (mhpdbg.fdin == -1) ) return;
+   if (!errcode || !mhpdbg.active || (mhpdbg.fd == -1) ) return;
 
    sprintf(buf, "\n****\nleavedos(%d) called, at termination point of DOSEMU\n****\n\n", errcode);
    dosdebug_flags |= DBGF_IN_LEAVEDOS;

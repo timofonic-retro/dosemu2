@@ -11,12 +11,14 @@
  */
 
 #include "config.h"
+#include <stddef.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <sys/time.h>	/* for struct timeval */
 #include <time.h>	/* for CLOCKS_PER_SEC */
 #include <sys/types.h>
-#include <sys/stat.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -29,98 +31,59 @@
 
 #include "utilities.h"
 
-#define    TMPFILE_VAR		"/var/run/dosemu."
-#define    TMPFILE_HOME		".dosemu/run/dosemu."
+#define DOSEMU_SKT "dosemu.dbg"
+#define DOSEMU_SKT_MAX 10
 
 #define MHP_BUFFERSIZE 8192
 
 #define FOREVER ((((unsigned int)-1) >> 1) / CLOCKS_PER_SEC)
 #define KILL_TIMEOUT 2
 
-fd_set readfds;
-struct timeval timeout;
 int kill_timeout=FOREVER;
+int fd;
 
-static  char *pipename_in, *pipename_out;
-int fdout, fdin;
 
-static int check_pid(int pid);
-
-static int find_dosemu_pid(char *tmpfile, int local)
+static int find_dosemu_sockets(char **sktnames, int max)
 {
-  DIR *dir;
-  struct dirent *p;
-  char *dn, *id;
-  int i,j,pid=-1;
-  static int once =1;
+  FILE *fp;
+  char buf[1024], *p;
+  int len, found, i, isdup;
 
-  dn = strdup(tmpfile);
-  j=i=strlen(dn);
-  while (dn[i--] != '/');  /* remove 'dosemu.dbgin' */
-  i++;
-  dn[i++]=0;
-  id=dn+i;
-  j-=i;
-
-  dir = opendir(dn);
-  if (!dir) {
-    if (local) {
-      free(dn);
-      return -1;
-    }
-    fprintf(stderr, "can't open directory %s\n",dn);
-    free(dn);
-    exit(1);
-  }
-  i = 0;
-  while((p = readdir(dir))) {
-
-    if(!strncmp(id,p->d_name,j) && p->d_name[j] >= '0' && p->d_name[j] <= '9') {
-      pid = strtol(p->d_name + j, 0, 0);
-      if(check_pid(pid)) {
-        if(once && i++ == 1) {
-          fprintf(stderr,
-            "Multiple dosemu processes running or stalled files in %s\n"
-            "restart dosdebug with one of the following pids as first arg:\n"
-            "%d", dn, pid
-          );
-          once = 0;
-        }
-      }
-      if (i > 1) fprintf(stderr, " %d", pid);
-    }
-  }
-  free(dn);
-  closedir(dir);
-  if (i > 1) {
-    fprintf(stderr, "\n");
-    if (local) return -1;
-    exit(1);
-  }
-  if (!i) {
-    if (local) return -1;
-    fprintf(stderr, "No dosemu process running, giving up.\n");
-    exit(1);
-  }
-
-  return pid;
-}
-
-static int check_pid(int pid)
-{
-  int fd;
-  char buf[32], name[128];
-
-  memset(buf, 0, sizeof(buf));
-  sprintf(name, "/proc/%d/stat", pid);
-  if ((fd = open(name, O_RDONLY)) ==-1) return 0;
-  if (read(fd, buf, sizeof(buf)-1) <=0) {
-    close(fd);
+  if ((fp = fopen("/proc/net/unix", "r")) == NULL)
     return 0;
+
+  // 00000000: 00000003 00000000 00000000 0001 03 25219 @/tmp/.X11-unix/X0
+  for (found=0;found < max;/* */) {
+    if (fgets(buf, sizeof(buf), fp) == NULL) {
+      fclose(fp);
+      break;
+    }
+    buf[sizeof(buf)-1] = '\0';
+
+    len = strlen(buf);
+    if (buf[len-1] == '\n') {
+      buf[len-1] = '\0';
+    }
+
+    p = strstr(buf, DOSEMU_SKT);
+    for (/* */; p >= buf; p--) {
+      if (*p == ' ') {
+        for (isdup = 0,i = 0; i < found; i++) { /* check for a duplicate */
+          if (strcmp(sktnames[i], p+1) == 0) {
+            isdup = 1;
+          }
+        }
+        if (!isdup) {
+          sktnames[found] = strdup(p+1);
+          found++;
+        }
+        break;
+      }
+    }
   }
-  close(fd);
-  return strstr(buf,"dos") ? 1 : 0;
+  return found;
 }
+
 
 #if 0
 static int switch_console(char new_console)
@@ -162,7 +125,8 @@ static void handle_console_input(void)
 
   n=read(0, buf, sizeof(buf));
   if (n>0) {
-    if (n==1 && buf[0]=='\n') write(fdout, sbuf, sn);
+    if (n==1 && buf[0]=='\n')
+      write(fd, sbuf, sn);
     else {
 #if 0
       if (!strncmp(buf,"console ",8)) {
@@ -182,7 +146,8 @@ static void handle_console_input(void)
       else
         sn = snprintf(sbuf, min(sizeof sbuf, n + 1), "%s", buf);
 
-      if (buf[0] == 'q') exit(1);
+      if (buf[0] == 'q')
+        exit(1);
     }
   }
 }
@@ -193,12 +158,14 @@ static void handle_dbg_input(void)
   char buf[MHP_BUFFERSIZE], *p;
   int n;
   do {
-    n=read(fdin, buf, sizeof(buf));
+    n=read(fd, buf, sizeof(buf));
   } while (n < 0 && errno == EAGAIN);
-  if (n >0) {
-    if ((p=memchr(buf,1,n))!=NULL) n=p-buf;
+  if (n > 0) {
+    if ((p=memchr(buf,1,n))!=NULL) /* dosemu signalled us to quit - eek! */
+      n=p-buf;
     write(1, buf, n);
-    if (p!=NULL) exit(0);
+    if (p!=NULL)
+      exit(0);
   }
   if (n == 0)
     exit(1);
@@ -207,99 +174,117 @@ static void handle_dbg_input(void)
 
 int main (int argc, char **argv)
 {
-  int numfds, dospid, ret;
-  char *home_p;
+  struct timeval timeout;
+  int numfds;
+  fd_set readfds;
+  pid_t dospid;
+  struct sockaddr_un local;
+  socklen_t len;
+  char *sktname;
+  char *sktnames[DOSEMU_SKT_MAX];
+  int num, i;
+  struct ucred ucred;
+  socklen_t uclen;
+  char msg[MHP_BUFFERSIZE];
+
+  if(argc > 1) {                                   /* socket name supplied */
+    sktname = strdup(argv[1]);
+  } else {                                       /* attempt to discover it */
+    num = find_dosemu_sockets(sktnames, DOSEMU_SKT_MAX);
+    if (num > 1) {
+      fprintf(stderr, "Multiple dosemu processes found, please choose one\n");
+      for (i=0; i<num; i++) {
+        fprintf(stderr, "  %s\n", sktnames[i]);
+        free(sktnames[i]);
+      }
+      return 0;
+    }
+    if (num == 0) {
+      fprintf(stderr, "No dosemu process found, dosdebug not available\n");
+      return 1;
+    }
+    sktname = sktnames[0];
+  }
+
+  fd = socket(AF_UNIX, SOCK_SEQPACKET, 0);
+  local.sun_family = AF_UNIX;
+  strncpy(local.sun_path, sktname, sizeof(local.sun_path)-1);
+  local.sun_path[sizeof(local.sun_path)-1] = '\0';
+  len = offsetof(struct sockaddr_un, sun_path) + 1 + strlen(local.sun_path);
+  free(sktname);
+
+  if (local.sun_path[0] == '@') { /* linux abstract socket */
+    local.sun_path[0] = '\0';
+    len--;
+  }
+
+  if (connect(fd, (struct sockaddr *)&local, len) == -1) {
+    fprintf(stderr, "Can't connect socket, dosdebug not available\n");
+    return 2;
+  }
+
+  // get dospid
+  uclen = sizeof(struct ucred);
+  if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &ucred, &uclen) == -1) {
+    fprintf(stderr, "Can't get dosemu.bin pid, kill via signal not available\n");
+    dospid = 0;
+  } else {
+    dospid = ucred.pid;
+    fprintf(stderr, "Dosemu.bin pid is %d\n", dospid);
+  }
+
+  // check connection, banner expected
+  num = recv(fd, &msg, MHP_BUFFERSIZE, 0);
+  if (num < 0) {
+    fprintf(stderr, "Can't communicate with dosemu, do you have permission?\n");
+    return 3;
+  }
+  write(1, msg, num);
+
+  if (send(fd, "r0\n", 3, MSG_NOSIGNAL|MSG_EOR) != 3) {
+    fprintf(stderr, "Can't write to dosemu, do you have permission?\n");
+    return 3;
+  }
 
   FD_ZERO(&readfds);
 
-  home_p = getenv("HOME");
-
-  if (!argv[1]) {
-    dospid = -1;
-    if (home_p) {
-      char *dosemu_tmpfile_pat;
-
-      ret = asprintf(&dosemu_tmpfile_pat, "%s/" TMPFILE_HOME "dbgin.", home_p);
-      assert(ret != -1);
-
-      dospid=find_dosemu_pid(dosemu_tmpfile_pat, 1);
-      free(dosemu_tmpfile_pat);
-    }
-    if (dospid == -1) {
-      dospid=find_dosemu_pid(TMPFILE_VAR "dbgin.", 0);
-    }
-  }
-  else dospid=strtol(argv[1], 0, 0);
-
-  if (!check_pid(dospid)) {
-    fprintf(stderr, "no dosemu running on pid %d\n", dospid);
-    exit(1);
-  }
-
-  /* NOTE: need to open read/write else O_NONBLOCK would fail to open */
-  fdout = -1;
-  if (home_p) {
-    ret = asprintf(&pipename_in, "%s/%sdbgin.%d", home_p, TMPFILE_HOME, dospid);
-    assert(ret != -1);
-
-    ret = asprintf(&pipename_out, "%s/%sdbgout.%d", home_p, TMPFILE_HOME, dospid);
-    assert(ret != -1);
-
-    fdout = open(pipename_in, O_RDWR | O_NONBLOCK);
-    if (fdout == -1) {
-      free(pipename_in);
-      free(pipename_out);
-    }
-  }
-  if (fdout == -1) {
-    /* if we cannot open pipe and we were trying $HOME/.dosemu/run directory,
-       try with /var/run/dosemu directory */
-    ret = asprintf(&pipename_in, TMPFILE_VAR "dbgin.%d", dospid);
-    assert(ret != -1);
-
-    ret = asprintf(&pipename_out, TMPFILE_VAR "dbgout.%d", dospid);
-    assert(ret != -1);
-
-    fdout = open(pipename_in, O_RDWR | O_NONBLOCK);
-  }
-  if (fdout == -1) {
-    perror("can't open output fifo");
-    exit(1);
-  }
-  if ((fdin = open(pipename_out, O_RDONLY | O_NONBLOCK)) == -1) {
-    close(fdout);
-    perror("can't open input fifo");
-    exit(1);
-  }
-
-  write(fdout,"r0\n",3);
   do {
-    FD_SET(fdin, &readfds);
+    FD_SET(fd, &readfds);
     FD_SET(0, &readfds);   /* stdin */
     timeout.tv_sec=kill_timeout;
     timeout.tv_usec=0;
-    numfds=select( fdin+1 /* max number of fds to scan */,
+    numfds=select( fd+1 /* max number of fds to scan */,
                    &readfds,
                    NULL /*no writefds*/,
                    NULL /*no exceptfds*/, &timeout);
     if (numfds > 0) {
-      if (FD_ISSET(0, &readfds)) handle_console_input();
-      if (FD_ISSET(fdin, &readfds)) handle_dbg_input();
+      if (FD_ISSET(0, &readfds))
+        handle_console_input();
+      if (FD_ISSET(fd, &readfds))
+        handle_dbg_input();
     }
     else {
       if (kill_timeout != FOREVER) {
         if (kill_timeout > KILL_TIMEOUT) {
-          struct stat st;
-          if (stat(pipename_in,&st) != -1) {
+          if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &ucred, &uclen) != -1) {
             fprintf(stderr, "...oh dear, have to do kill SIGKILL\n");
-            kill(dospid, SIGKILL);
-            fprintf(stderr, "dosemu process (pid %d) is killed\n",dospid);
+            if (dospid > 0) {
+              kill(dospid, SIGKILL);
+              fprintf(stderr, "dosemu process (pid %d) was killed\n", dospid);
+            } else {
+              fprintf(stderr, "we have no valid pid for dosemu, kill manually\n");
+            }
           }
-          else fprintf(stderr, "dosdebug terminated, dosemu process (pid %d) is killed\n",dospid);
+          else
+            fprintf(stderr, "dosdebug terminated, dosemu process (pid %d) is killed\n", dospid);
           exit(1);
         }
         fprintf(stderr, "no reaction, trying kill SIGTERM\n");
-        kill(dospid, SIGTERM);
+        if (dospid > 0) {
+          kill(dospid, SIGTERM);
+        } else {
+          fprintf(stderr, "we have no valid pid for dosemu, kill manually\n");
+        }
         kill_timeout += KILL_TIMEOUT;
       }
     }

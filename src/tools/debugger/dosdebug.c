@@ -26,8 +26,9 @@
 #include <string.h>
 #include <signal.h>
 #include <assert.h>
-
 #include <sys/ioctl.h>
+#include <readline/readline.h>
+#include <readline/history.h>
 
 #include "utilities.h"
 
@@ -41,6 +42,9 @@
 
 int kill_timeout=FOREVER;
 int fd;
+
+int running;
+const char *prompt = "dosdebug> ";
 
 
 static int find_dosemu_sockets(char **sktnames, int max)
@@ -116,59 +120,82 @@ static int switch_console(char new_console)
 }
 #endif
 
-static void handle_console_input(void)
+/*
+ * Callback function called for each line when accept-line executed, EOF
+ * seen, or EOF character read.
+ */
+static void handle_console_input (char *line)
 {
-  char buf[MHP_BUFFERSIZE];
-  static char sbuf[MHP_BUFFERSIZE]="\n";
-  static int sn=1;
-  int n;
+  static char *last_cmd = NULL;
+  int len;
 
-  n=read(0, buf, sizeof(buf));
-  if (n>0) {
-    if (n==1 && buf[0]=='\n')
-      write(fd, sbuf, sn);
-    else {
-#if 0
-      if (!strncmp(buf,"console ",8)) {
-        switch_console(buf[8]);
-        return;
+  /* Can use ^D (stty eof) or `quit' to exit. */
+  if (line == NULL || !strcmp(line, "quit")) {
+    fputs("\nquit\n", rl_outstream);
+    fflush(rl_outstream);
+    running = 0;
+  } else {
+    if (*line) {
+      add_history(line);
+      if (last_cmd)
+        free(last_cmd);
+      last_cmd = strdup(line);
+    } else {
+      if (last_cmd) {
+        free(line);
+        line = strdup(last_cmd);
       }
-#endif
-      if (!strncmp(buf,"kill",4)) {
-        kill_timeout=KILL_TIMEOUT;
-      }
-      write(fdout, buf, n);
-
-      if (strncmp(buf, "d ", 2) == 0)
-        sn = snprintf(sbuf, sizeof sbuf, "d\n");
-      else if (strncmp(buf, "u ", 2) == 0)
-        sn = snprintf(sbuf, sizeof sbuf, "u\n");
-      else
-        sn = snprintf(sbuf, min(sizeof sbuf, n + 1), "%s", buf);
-
-      if (buf[0] == 'q')
-        exit(1);
     }
+
+    len = strlen(line);
+
+#if 0
+    if (!strncmp(line, "console ", 8) && len > 8) {
+      switch_console(line[8]);
+      free(line);
+      return;
+    }
+#endif
+    if (!strcmp(line, "kill")) {
+      kill_timeout=KILL_TIMEOUT;
+    }
+    if (write(fd, line, len) != len) {
+      fprintf(stderr, "write to socket failed\n");
+    }
+    free(line);
   }
 }
 
 
-static void handle_dbg_input(void)
+/* returns 0: done, 1: more to do */
+static int handle_dbg_input(int *retval)
 {
   char buf[MHP_BUFFERSIZE], *p;
   int n;
+
   do {
     n=read(fd, buf, sizeof(buf));
   } while (n < 0 && errno == EAGAIN);
   if (n > 0) {
     if ((p=memchr(buf,1,n))!=NULL) /* dosemu signalled us to quit - eek! */
       n=p-buf;
-    write(1, buf, n);
-    if (p!=NULL)
-      exit(0);
+
+    fputs("\n", rl_outstream);
+    fwrite(buf, 1, n, rl_outstream);
+    fflush(rl_outstream);
+    rl_on_new_line();
+    rl_redisplay();
+
+    if (p != NULL) {
+      *retval = 0;
+      return 0;
+    }
   }
-  if (n == 0)
-    exit(1);
+  if (n == 0) {
+    *retval = 1;
+    return 0;
+  }
+  return 1;
 }
 
 
@@ -176,6 +203,7 @@ int main (int argc, char **argv)
 {
   struct timeval timeout;
   int numfds;
+  int fdrl;
   fd_set readfds;
   pid_t dospid;
   struct sockaddr_un local;
@@ -186,6 +214,7 @@ int main (int argc, char **argv)
   struct ucred ucred;
   socklen_t uclen;
   char msg[MHP_BUFFERSIZE];
+  int retval;
 
   if(argc > 1) {                                   /* socket name supplied */
     sktname = strdup(argv[1]);
@@ -233,37 +262,47 @@ int main (int argc, char **argv)
     fprintf(stderr, "Dosemu.bin pid is %d\n", dospid);
   }
 
+  /* Install the readline handler. */
+  rl_callback_handler_install(prompt, handle_console_input);
+
   // check connection, banner expected
   num = recv(fd, &msg, MHP_BUFFERSIZE, 0);
   if (num < 0) {
     fprintf(stderr, "Can't communicate with dosemu, do you have permission?\n");
+    rl_callback_handler_remove();
     return 3;
   }
-  write(1, msg, num);
+  fwrite(msg, 1, num, rl_outstream);
+  fflush(rl_outstream);
 
   if (send(fd, "r0\n", 3, MSG_NOSIGNAL|MSG_EOR) != 3) {
     fprintf(stderr, "Can't write to dosemu, do you have permission?\n");
+    rl_callback_handler_remove();
     return 3;
   }
 
   FD_ZERO(&readfds);
 
-  do {
+  fdrl = fileno(rl_instream);
+
+  for (running=1, retval=0; running; /* */) {
     FD_SET(fd, &readfds);
-    FD_SET(0, &readfds);   /* stdin */
+    FD_SET(fdrl, &readfds);
     timeout.tv_sec=kill_timeout;
     timeout.tv_usec=0;
-    numfds=select( fd+1 /* max number of fds to scan */,
+    numfds=select(((fd > fdrl) ? fd : fdrl) + 1, /* max number of fds to scan */
                    &readfds,
                    NULL /*no writefds*/,
                    NULL /*no exceptfds*/, &timeout);
     if (numfds > 0) {
-      if (FD_ISSET(0, &readfds))
-        handle_console_input();
+      if (FD_ISSET(fdrl, &readfds))
+        rl_callback_read_char();
+
       if (FD_ISSET(fd, &readfds))
-        handle_dbg_input();
-    }
-    else {
+        if (!handle_dbg_input(&retval))
+          break;
+
+    } else {
       if (kill_timeout != FOREVER) {
         if (kill_timeout > KILL_TIMEOUT) {
           if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &ucred, &uclen) != -1) {
@@ -277,7 +316,8 @@ int main (int argc, char **argv)
           }
           else
             fprintf(stderr, "dosdebug terminated, dosemu process (pid %d) is killed\n", dospid);
-          exit(1);
+          retval = 1;
+          break;
         }
         fprintf(stderr, "no reaction, trying kill SIGTERM\n");
         if (dospid > 0) {
@@ -288,6 +328,8 @@ int main (int argc, char **argv)
         kill_timeout += KILL_TIMEOUT;
       }
     }
-  } while (1);
-  return 0;
+  }
+  rl_crlf();
+  rl_callback_handler_remove();
+  return retval;
 }

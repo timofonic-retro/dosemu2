@@ -1252,8 +1252,8 @@ int msdos_pre_extender(struct sigcontext *scp, int intr,
     return MSDOS_RM;
 }
 
-#define RMSEG_ADR(type, seg, reg)  type(&mem_base[(RMREG(seg) << 4) + \
-    RMLWORD(reg)])
+#define RMSEG_ADR(type, seg, reg)  type(get_mem_base() + (RMREG(seg) << 4) + \
+    RMLWORD(reg))
 
 /*
  * DANG_BEGIN_FUNCTION msdos_post_extender

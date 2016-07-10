@@ -1025,7 +1025,7 @@ int vga_emu_fault(struct sigcontext *scp, int pmode)
     dosaddr_t daddr = GetSegmentBase(_cs) + _eip;
     cs_ip = SEL_ADR_CLNT(_cs, _eip, dpmi_mhp_get_selector_size(_cs));
     if (
-	  (cs_ip >= &mem_base[0] && cs_ip < &mem_base[0x110000]) ||
+	  (cs_ip >= get_mem_base() && cs_ip < get_mem_base() + 0x110000) ||
 	  ((uintptr_t)cs_ip > config.dpmi_base &&
 	   (uintptr_t)cs_ip + 20 < config.dpmi_base + config.dpmi * 1024 &&
 	   dpmi_is_valid_range(daddr, 15)))

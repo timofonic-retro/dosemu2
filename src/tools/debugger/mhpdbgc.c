@@ -807,7 +807,7 @@ static void mhp_disasm(int argc, char * argv[])
    }
    if (linmode == 2) {
      if (seg != 0 || limit != 0xFFFFFFFF)
-       seekval += (uintptr_t)mem_base;
+       seekval += (uintptr_t)get_mem_base();
      def_size |= 4;
    }
    rc=0;

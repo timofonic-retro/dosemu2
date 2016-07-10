@@ -38,8 +38,8 @@
 
 struct mem_map_struct {
   off_t src;
-  void *base;
   void *bkp_base;
+  void *base[MAX_BASES];
   dosaddr_t dst;
   int len;
   int mapped;
@@ -50,7 +50,7 @@ static int kmem_mappings = 0;
 static struct mem_map_struct kmem_map[MAX_KMEM_MAPPINGS];
 
 static int init_done = 0;
-unsigned char *mem_base;
+unsigned char *mem_bases[MAX_BASES];
 char *lowmem_base;
 
 static struct mappingdrivers *mappingdrv[] = {
@@ -143,10 +143,15 @@ static int map_find(struct mem_map_struct *map, int max,
 
 static void kmem_unmap_single(int cap, int idx)
 {
-  kmem_map[idx].base = mmap(0, kmem_map[idx].len, PROT_NONE,
+  int i;
+
+  for(i = 0; i < MAX_BASES; i++) {
+    kmem_map[idx].base[i] = mmap(0, kmem_map[idx].len, PROT_NONE,
 	       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  mremap(MEM_BASE32(kmem_map[idx].dst), kmem_map[idx].len,
-      kmem_map[idx].len, MREMAP_MAYMOVE | MREMAP_FIXED, kmem_map[idx].base);
+    mremap(MEM_BASE32x(kmem_map[idx].dst, i), kmem_map[idx].len,
+	       kmem_map[idx].len, MREMAP_MAYMOVE | MREMAP_FIXED,
+	       kmem_map[idx].base[i]);
+  }
   kmem_map[idx].mapped = 0;
 }
 
@@ -160,8 +165,12 @@ static void kmem_unmap_mapping(int cap, dosaddr_t addr, int mapsize)
 
 static void kmem_map_single(int cap, int idx, dosaddr_t targ)
 {
-  mremap(kmem_map[idx].base, kmem_map[idx].len, kmem_map[idx].len,
-      MREMAP_MAYMOVE | MREMAP_FIXED, MEM_BASE32(targ));
+  int i;
+
+  for(i = 0; i < MAX_BASES; i++) {
+    mremap(kmem_map[idx].base[i], kmem_map[idx].len, kmem_map[idx].len,
+      MREMAP_MAYMOVE | MREMAP_FIXED, MEM_BASE32x(targ, i));
+  }
   kmem_map[idx].dst = targ;
   kmem_map[idx].mapped = 1;
 }
@@ -188,21 +197,24 @@ void *alias_mapping_high(int cap, size_t mapsize, int protect, void *source)
 int alias_mapping(int cap, dosaddr_t targ, size_t mapsize, int protect, void *source)
 {
   void *target, *addr;
+  int i;
 
   assert(targ != (dosaddr_t)-1);
   Q__printf("MAPPING: alias, cap=%s, targ=%#x, size=%zx, protect=%x, source=%p\n",
 	cap, targ, mapsize, protect, source);
   /* for non-zero INIT_LOWRAM the target is a hint */
-  target = MEM_BASE32(targ);
   if (cap & MAPPING_COPYBACK) {
     assert(cap & (MAPPING_LOWMEM | MAPPING_HMA));
-    memcpy(source, target, mapsize);
+    memcpy_2unix(source, targ, mapsize);
   }
   kmem_unmap_mapping(cap, targ, mapsize);
 
-  addr = mappingdriver->alias(cap, target, mapsize, protect, source);
-  if (addr == MAP_FAILED)
-    return -1;
+  for (i = 0; i < MAX_BASES; i++) {
+    target = MEM_BASE32x(targ, i);
+    addr = mappingdriver->alias(cap, target, mapsize, protect, source);
+    if (addr == MAP_FAILED)
+      return -1;
+  }
   if (targ != (dosaddr_t)-1)
     update_aliasmap(targ, mapsize, source);
   if (config.cpu_vm == CPUVM_KVM)
@@ -314,8 +326,8 @@ void *mmap_mapping(int cap, dosaddr_t targ, size_t mapsize, int protect)
 
 int mprotect_mapping(int cap, dosaddr_t targ, size_t mapsize, int protect)
 {
-  int ret;
-  void *addr = MEM_BASE32(targ);
+  int ret, i;
+  void *addr;
 
   Q__printf("MAPPING: mprotect, cap=%s, addr=%p, size=%zx, protect=%x\n",
 	cap, addr, mapsize, protect);
@@ -331,11 +343,17 @@ int mprotect_mapping(int cap, dosaddr_t targ, size_t mapsize, int protect)
        (gva->gpa or ngpa->gpa)
        - if permissions are insufficient, reflect the fault back to the guest)
   */
+  addr = MEM_BASE32x(targ, /*KVM_BASE*/ MEM_BASE);
   if (config.cpu_vm == CPUVM_KVM)
     mprotect_kvm(addr, mapsize, protect);
-  ret = mprotect(addr, mapsize, protect);
-  if (ret)
-    error("mprotect() failed: %s\n", strerror(errno));
+  for (i = 0; i < MAX_BASES; i++) {
+    addr = MEM_BASE32x(targ, i);
+    ret = mprotect(addr, mapsize, protect);
+    if (ret) {
+      error("mprotect() failed: %s\n", strerror(errno));
+      return -1;
+    }
+  }
   return ret;
 }
 
@@ -434,6 +452,7 @@ void close_mapping(int cap)
 static void *alloc_mapping_kmem(size_t mapsize, off_t source)
 {
     void *addr, *addr2;
+    int i;
 
     Q_printf("MAPPING: alloc kmem, source=%#zx size=%#zx\n", source, mapsize);
     if (source == -1) {
@@ -445,8 +464,11 @@ static void *alloc_mapping_kmem(size_t mapsize, off_t source)
       return MAP_FAILED;
     }
     open_kmem();
-    addr = mmap(0, mapsize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_32BIT,
+    for (i = 0; i < MAX_BASES; i++) {
+      addr = mmap(0, mapsize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_32BIT,
 		mem_fd, source);
+      kmem_map[kmem_mappings].base[i] = addr;
+    }
     addr2 = mmap(0, mapsize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_32BIT,
 		mem_fd, source);
     close_kmem();
@@ -454,7 +476,6 @@ static void *alloc_mapping_kmem(size_t mapsize, off_t source)
       return MAP_FAILED;
 
     kmem_map[kmem_mappings].src = source;
-    kmem_map[kmem_mappings].base = addr;
     kmem_map[kmem_mappings].bkp_base = addr2;
     kmem_map[kmem_mappings].dst = -1;
     kmem_map[kmem_mappings].len = mapsize;

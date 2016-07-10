@@ -229,7 +229,7 @@ int get_ldt(void *buffer)
   for (i = 0, dp = buffer; i < LDT_ENTRIES; i++, dp++) {
     unsigned int base_addr = DT_BASE(dp);
     if (base_addr || DT_LIMIT(dp)) {
-      base_addr -= (uintptr_t)mem_base;
+      base_addr -= (uintptr_t)get_mem_base();
       MKBASE(dp, base_addr);
     }
   }
@@ -266,9 +266,9 @@ static int set_ldt_entry(int entry, unsigned long base, unsigned int limit,
        the LDT we emulate, and DOS applications work with,
        has all base addresses with respect to mem_base */
     if (base || limit) {
-      ldt_info.base_addr += (uintptr_t)mem_base;
+      ldt_info.base_addr += (uintptr_t)get_mem_base();
       __retval = modify_ldt(LDT_WRITE, &ldt_info, sizeof(ldt_info));
-      ldt_info.base_addr -= (uintptr_t)mem_base;
+      ldt_info.base_addr -= (uintptr_t)get_mem_base();
     } else {
       __retval = modify_ldt(LDT_WRITE, &ldt_info, sizeof(ldt_info));
     }

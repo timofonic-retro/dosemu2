@@ -192,7 +192,7 @@ char *DPMI_show_state(struct sigcontext *scp)
       int i;
       pos += sprintf(buf + pos, "OPS  : ");
       if (!(_cs & 0x0004) ||
-	  (csp2 >= &mem_base[0] && csp2 + 20 < &mem_base[0x110000]) ||
+	  (csp2 >= get_mem_base() && csp2 + 20 < get_mem_base() + 0x110000) ||
 	  ((uintptr_t)csp2 > config.dpmi_base &&
 	   (uintptr_t)csp2 + 20 < config.dpmi_base + config.dpmi * 1024 &&
 	   dpmi_is_valid_range(daddr - 10, 20))) {
@@ -216,7 +216,7 @@ char *DPMI_show_state(struct sigcontext *scp)
 	saddr = GetSegmentBase(_ss) + _esp;
       }
       pos += sprintf(buf + pos, "STACK: ");
-      if ((ssp2 >= &mem_base[0] && ssp2 + 20 < &mem_base[0x110000]) ||
+      if ((ssp2 >= get_mem_base() && ssp2 + 20 < get_mem_base() + 0x110000) ||
 	  ((uintptr_t)ssp2 > config.dpmi_base &&
 	   (uintptr_t)ssp2 + 20 < config.dpmi_base + config.dpmi * 1024 &&
 	   dpmi_is_valid_range(saddr - 10, 20))) {

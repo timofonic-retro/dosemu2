@@ -109,4 +109,10 @@ void list_hardware_ram(void (*print)(const char *, ...));
 void *mapping_find_hole(unsigned long start, unsigned long stop,
 	unsigned long size);
 
+static inline unsigned char *MEM_BASE32x(dosaddr_t a, int base)
+{
+    uint32_t off = (uint32_t)(uintptr_t)(mem_bases[base] + a);
+    return LINP(off);
+}
+
 #endif /* _MAPPING_H_ */

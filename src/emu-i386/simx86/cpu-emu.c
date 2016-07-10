@@ -250,7 +250,7 @@ char *e_print_regs(void)
 	if (debug_level('e')>4) {
 		int i;
 		unsigned char *st = MEM_BASE32(LONG_SS+TheCPU.esp);
-		if ((st >= mem_base && st < (unsigned char *)MEM_BASE32(0x110000)) ||
+		if ((st >= get_mem_base() && st < (unsigned char *)MEM_BASE32(0x110000)) ||
 		    (st > (unsigned char *)config.dpmi_base &&
 		     st <= (unsigned char *)config.dpmi_base +
 		     config.dpmi * 1024)) {
@@ -1172,7 +1172,7 @@ int e_vm86(void)
 #endif
   e_sigpa_count = 0;
   mode = ADDR16|DATA16; TheCPU.StackMask = 0x0000ffff;
-  TheCPU.mem_base = (uintptr_t)mem_base;
+  TheCPU.mem_base = (uintptr_t)get_mem_base();
   VgaAbsBankBase = TheCPU.mem_base + vga.mem.bank_base;
   if (eTimeCorrect >= 0) TheCPU.EMUtime = GETTSC();
 #ifdef SKIP_VM86_TRACE

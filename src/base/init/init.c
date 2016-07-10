@@ -346,7 +346,7 @@ void low_mem_init(void)
     leavedos(98);
   }
 
-  mem_base = mem_reserve();
+  mem_bases[MEM_BASE] = mem_reserve();
   result = alias_mapping(MAPPING_INIT_LOWRAM, 0, LOWMEM_SIZE + HMASIZE,
 			 PROT_READ | PROT_WRITE | PROT_EXEC, lowmem);
   if (result == -1) {

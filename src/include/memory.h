@@ -214,18 +214,22 @@ void *physaddr_to_unixaddr(unsigned int addr);
    restrictions it can be non-zero. Non-zero values block vm86 but at least
    give NULL pointer protection.
 */
-extern unsigned char *mem_base;
-
+enum { MEM_BASE, /*KVM_BASE,*/ MAX_BASES };
+extern unsigned char *mem_bases[MAX_BASES];
+static inline unsigned char *get_mem_base(void)
+{
+    return mem_bases[MEM_BASE];
+}
 #define LINP(a) ((unsigned char *)(uintptr_t)(a))
 typedef uint32_t dosaddr_t;
 static inline unsigned char *MEM_BASE32(dosaddr_t a)
 {
-    uint32_t off = (uint32_t)(uintptr_t)(mem_base + a);
+    uint32_t off = (uint32_t)(uintptr_t)(get_mem_base() + a);
     return LINP(off);
 }
 static inline dosaddr_t DOSADDR_REL(const unsigned char *a)
 {
-    return (a - mem_base);
+    return (a - get_mem_base());
 }
 
 /* lowmem_base points to a shared memory image of the area 0--1MB+64K.

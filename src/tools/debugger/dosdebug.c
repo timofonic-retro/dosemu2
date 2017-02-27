@@ -200,6 +200,75 @@ static int handle_dbg_input(int *retval)
   return 1;
 }
 
+// for readline completion
+
+static const char *cmds[] = {
+  "r0",
+  "r",
+  "e",
+  "ed",
+  "d",
+  "u",
+  "g",
+  "stop",
+  "mode",
+  "ti",
+  "tc",
+  "r32",
+  "bl",
+  "bp", "bc",
+  "bpint", "bcint",
+  "bpintd", "bcintd",
+  "bpload",
+  "bplog", "bclog",
+  "rmapfile",
+  "rusermap",
+  "kill",
+  "ldt",
+  "log",
+  "dump",
+  "?",
+  NULL
+};
+
+static char *command_generator(const char *text, int state) {
+  static int list_index, len;
+  char *name;
+
+  /* If this is a new word to complete, initialize now.  This
+   *      includes saving the length of TEXT for efficiency, and
+   *           initializing the index variable to 0. */
+  if (!state) {
+    list_index = 0;
+    len = strlen(text);
+  }
+
+  /* Return the next name which partially matches from the
+   *      command list. */
+  while (name = cmds[list_index]) {
+    list_index++;
+
+    if (strncmp(name, text, len) == 0)
+      return strdup(name);
+  }
+
+  /* If no names matched, then return NULL. */
+  return NULL;
+}
+
+static char **dosdebug_completion(const char *text, int start, int end)
+{
+  char **matches = NULL;
+
+  /* If this word is at the start of the line, then it is a command to
+   * complete. Otherwise it is the name of a file in the current directory.
+   */
+  if (start == 0)
+    matches = rl_completion_matches(text, command_generator);
+
+  return matches;
+}
+
 
 int main (int argc, char **argv)
 {
@@ -263,6 +332,9 @@ int main (int argc, char **argv)
     dospid = ucred.pid;
     fprintf(stderr, "Dosemu.bin pid is %d\n", dospid);
   }
+
+  /* Install the readline completion function */
+  rl_attempted_completion_function = dosdebug_completion;
 
   /* Install the readline handler. */
   rl_callback_handler_install(prompt, handle_console_input);

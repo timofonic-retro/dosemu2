@@ -6,8 +6,6 @@
  * Terminal client for DOSEMU debugger v0.2
  * by Hans Lermen <lermen@elserv.ffm.fgan.de>
  * It uses /var/run/dosemu.dbgXX.PID for connections.
- *
- * The switch-console code is from Kevin Buhr <buhr@stat.wisc.edu>
  */
 
 #include "config.h"
@@ -88,38 +86,6 @@ static int find_dosemu_sockets(char **sktnames, int max)
   return found;
 }
 
-
-#if 0
-static int switch_console(char new_console)
-{
-  int newvt;
-  int vt;
-
-  if ((new_console < '1') || (new_console > '8')) {
-    fprintf(stderr,"wrong console number\n");
-    return -1;
-  }
-
-  newvt = new_console & 15;
-  vt = open( "/dev/tty1", O_RDONLY );
-  if( vt == -1 ) {
-    perror("open(/dev/tty1)");
-    return -1;
-  }
-  if( ioctl( vt, VT_ACTIVATE, newvt ) ) {
-    perror("ioctl(VT_ACTIVATE)");
-    return -1;
-  }
-  if( ioctl( vt, VT_WAITACTIVE, newvt ) ) {
-    perror("ioctl(VT_WAITACTIVE)");
-    return -1;
-  }
-
-  close(vt);
-  return 0;
-}
-#endif
-
 /*
  * Callback function called for each line when accept-line executed, EOF
  * seen, or EOF character read.
@@ -151,13 +117,6 @@ static void handle_console_input (char *line)
 
     len = strlen(line);
 
-#if 0
-    if (!strncmp(line, "console ", 8) && len > 8) {
-      switch_console(line[8]);
-      free(line);
-      return;
-    }
-#endif
     if (!strcmp(line, "kill")) {
       kill_timeout=KILL_TIMEOUT;
     }

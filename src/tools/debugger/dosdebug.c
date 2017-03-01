@@ -86,47 +86,218 @@ static int find_dosemu_sockets(char **sktnames, int max)
   return found;
 }
 
+// for readline completion
+
+typedef struct {
+  char *name;         /* User printable name of the function. */
+  rl_icpfunc_t *func; /* Function to call */
+  char *doc;          /* Documentation for this function.  */
+} COMMAND;
+
+static rl_icpfunc_t db_help;
+static rl_icpfunc_t db_quit;
+static rl_icpfunc_t db_kill;
+
+static COMMAND cmds[] = {
+    {"r", NULL, "                      show regs\n"},
+    {"r32", NULL, "                    show regs in 32 bit format\n"},
+    {"e", NULL,
+     "ADDR val [val ..]\n"
+     "                        modify memory (0-1Mb), previous addr for ADDR='-'\n"
+     "                        val can be: a hex val (in case of 'e') or decimal\n"
+     "                        (in case of 'ed')\n"
+     "                        With 'ed' also a hexvalue in form of 0xFF is\n"
+     "                        allowed and can be mixed,\n"
+     "                        val can also be a character constant (e.g. 'a') or\n"
+     "                        a string (\" abcdef \")\n"
+     "                        val can also be any register symbolic and has the\n"
+     "                        size of that register.\n"
+     "                        Except for strings and registers, val can be\n"
+     "                        suffixed by\n"
+     "                        W(word size) or L (long size), default size is\n"
+     "                        byte.\n"},
+    {"d", NULL, "ADDR SIZE             dump memory (no limit)\n"},
+    {"dump", NULL, "ADDR SIZE FILE     dump memory to file (binary)\n"},
+    {"u", NULL, "ADDR SIZE             unassemble memory (no limit)\n"},
+    {"g", NULL, "                      go (if stopped)\n"},
+    {"stop", NULL, "                   stop (if running)\n"},
+    {"mode", NULL, "0|1|2|+d|-d        set mode (0=SEG16, 1=LIN32, 2=UNIX32)\n"
+                   "                        for u and d commands\n"},
+    {"t", NULL, "                      single step\n"},
+    {"ti", NULL, "                     single step into interrupt\n"},
+    {"tc", NULL,
+     "                     single step, loop forever until key pressed\n"},
+    {"bl", NULL, "                     list active breakpoints\n"},
+    {"bp", NULL, "ADDR                 set int3 style breakpoint\n"},
+    {"bc", NULL, "n                    clear breakpoint #n (as listed by bl)\n"},
+    {"bpint", NULL, "xx                set breakpoint on INT xx\n"},
+    {"bcint", NULL, "xx                clear breakpoint on INT xx\n"},
+    {"bpintd", NULL, "xx [ax]          set breakpoint on DPMI INT xx [ax]\n"},
+    {"bcintd", NULL, "xx [ax]          clear breakpoint on DPMI INT xx [ax]\n"},
+    {"bpload", NULL,
+     "                 stop at start of next loaded DOS program\n"},
+    {"bplog", NULL,
+     "REGEX             set breakpoint on logoutput using regex\n"},
+    {"bclog", NULL,
+     "REGEX             clear breakpoint on logoutput using regex\n"},
+    {"rmapfile", NULL,
+     "[FILE]         (re)read a dosemu.map ('nm' format) file\n"},
+    {"rusermap", NULL,
+     "org FILE       read microsoft linker format .MAP file 'fn'\n"
+     "                        code origin = 'org'.\n"},
+    {"ldt", NULL,
+     "sel lines           dump ldt from selector 'sel' for 'lines'\n"},
+    {"log", NULL,
+     "[FLAGS]             get/set debug-log flags (e.g 'log +M-k')\n"},
+    {"kill", db_kill, "                   Kill the dosemu process\n"},
+    {"quit", db_quit, "                   Quit the debug session\n"},
+    {"help", db_help, "                   Show this help\n"},
+    {"?", db_help, "                      Synonym for help\n"},
+    {"", NULL, "<ENTER>                Repeats previous command\n"},
+    {NULL, NULL, NULL}};
+
+
+static COMMAND *find_cmd(char *name) {
+  int i;
+  char *tmp, *p;
+
+  tmp = strdup(name);
+  if(!tmp)
+    return NULL;
+
+  p = strchr(tmp, ' ');
+  if(p)
+    *p = '\0';
+
+  for (i = 0; cmds[i].name; i++)
+    if (strcmp(tmp, cmds[i].name) == 0) {
+      free(tmp);
+      return (&cmds[i]);
+    }
+
+  free(tmp);
+  return NULL;
+}
+
+static char *db_cmd_generator(const char *text, int state) {
+  static int list_index, len;
+  char *name;
+
+  /* If this is a new word to complete, initialize index to 0 and save the
+   * length of TEXT for efficiency */
+  if (!state) {
+    list_index = 0;
+    len = strlen(text);
+  }
+
+  /* Return the next name which partially matches from the command list. */
+  while ((name = cmds[list_index].name)) {
+    list_index++;
+
+    if (strncmp(name, text, len) == 0)
+      return strdup(name);
+  }
+
+  return NULL;
+}
+
+static char **db_completion(const char *text, int start, int end)
+{
+  char **matches = NULL;
+
+  /* If this word is at the start of the line, then it is a command to
+   * complete. Otherwise it is the name of a file in the current directory.
+   */
+  if (start == 0)
+    matches = rl_completion_matches(text, db_cmd_generator);
+
+  return matches;
+}
+
+static int db_help(char *line) {
+  int i;
+
+  fputs("\n", rl_outstream);
+  for (i = 0; cmds[i].name; i++) {
+    if (cmds[i].doc)
+      fprintf(rl_outstream, "%s %s", cmds[i].name, cmds[i].doc);
+  }
+
+  fflush(rl_outstream);
+  return 0;
+}
+
+static int db_quit(char *line) {
+  fputs("\nquit\n", rl_outstream);
+  fflush(rl_outstream);
+  running = 0;
+  return 0;
+}
+
+static int db_kill(char *line) {
+  kill_timeout = KILL_TIMEOUT;
+  return 0;
+}
+
 /*
  * Callback function called for each line when accept-line executed, EOF
  * seen, or EOF character read.
  */
 static void handle_console_input (char *line)
 {
-  static char *last_cmd = NULL;
+  static char *last_line = NULL;
   int len;
+  COMMAND *cmd;
 
-  /* Can use ^D (stty eof) or `quit' to exit. */
-  if (line == NULL || !strcmp(line, "quit")) {
-    fputs("\nquit\n", rl_outstream);
-    fflush(rl_outstream);
-    running = 0;
-  } else {
-    if (*line) {
-      add_history(line);
-      if (last_cmd)
-        free(last_cmd);
-      last_cmd = strdup(line);
-      if ((strncmp(last_cmd, "d ", 2) == 0) || (strncmp(last_cmd, "u ", 2) == 0))
-        last_cmd[1] = '\0';
-    } else {
-      if (last_cmd) {
-        free(line);
-        line = strdup(last_cmd);
-      }
-    }
-
-    len = strlen(line);
-
-    if (!strcmp(line, "kill")) {
-      kill_timeout=KILL_TIMEOUT;
-    }
-    if (write(fd, line, len) != len) {
-      fprintf(stderr, "write to socket failed\n");
-    }
-    free(line);
+  if (!line) {
+    db_quit(line);
+    return;
   }
-}
 
+  /* Check if command valid */
+  cmd = find_cmd(line);
+  if(!cmd) {
+    fprintf(stderr, "Command '%s' not implemented\n", line);
+    free(line);
+    return;
+  }
+
+  /* Update or use history */
+  if (*line) {
+    add_history(line);
+    if (last_line)
+      free(last_line);
+    last_line = strdup(line);
+    if ((strncmp(last_line, "d ", 2) == 0) || (strncmp(last_line, "u ", 2) == 0))
+      last_line[1] = '\0';
+  } else {
+    free(line);
+    if (!last_line) {
+      return;
+    }
+    cmd = find_cmd(last_line);
+    if(!cmd) {
+      free(last_line);
+      last_line = NULL;
+      return;
+    }
+    line = strdup(last_line);
+  }
+
+  /* Maybe it's implemented locally */
+  if (cmd->func) {
+    cmd->func(line);
+    free(line);
+    return;
+  }
+
+  /* Pass to dosemu */
+  len = strlen(line);
+  if (write(fd, line, len) != len) {
+    fprintf(stderr, "Write to socket failed\n");
+  }
+  free(line);
+}
 
 /* returns 0: done, 1: more to do */
 static int handle_dbg_input(int *retval)
@@ -158,76 +329,6 @@ static int handle_dbg_input(int *retval)
   }
   return 1;
 }
-
-// for readline completion
-
-static const char *cmds[] = {
-  "r0",
-  "r",
-  "e",
-  "ed",
-  "d",
-  "u",
-  "g",
-  "stop",
-  "mode",
-  "ti",
-  "tc",
-  "r32",
-  "bl",
-  "bp", "bc",
-  "bpint", "bcint",
-  "bpintd", "bcintd",
-  "bpload",
-  "bplog", "bclog",
-  "rmapfile",
-  "rusermap",
-  "kill",
-  "ldt",
-  "log",
-  "dump",
-  "?",
-  NULL
-};
-
-static char *command_generator(const char *text, int state) {
-  static int list_index, len;
-  char *name;
-
-  /* If this is a new word to complete, initialize now.  This
-   *      includes saving the length of TEXT for efficiency, and
-   *           initializing the index variable to 0. */
-  if (!state) {
-    list_index = 0;
-    len = strlen(text);
-  }
-
-  /* Return the next name which partially matches from the
-   *      command list. */
-  while (name = cmds[list_index]) {
-    list_index++;
-
-    if (strncmp(name, text, len) == 0)
-      return strdup(name);
-  }
-
-  /* If no names matched, then return NULL. */
-  return NULL;
-}
-
-static char **dosdebug_completion(const char *text, int start, int end)
-{
-  char **matches = NULL;
-
-  /* If this word is at the start of the line, then it is a command to
-   * complete. Otherwise it is the name of a file in the current directory.
-   */
-  if (start == 0)
-    matches = rl_completion_matches(text, command_generator);
-
-  return matches;
-}
-
 
 int main (int argc, char **argv)
 {
@@ -296,7 +397,7 @@ int main (int argc, char **argv)
   rl_readline_name = "dosdebug";
 
   /* Install the readline completion function */
-  rl_attempted_completion_function = dosdebug_completion;
+  rl_attempted_completion_function = db_completion;
 
   /* Install the readline handler. */
   rl_callback_handler_install(prompt, handle_console_input);

@@ -12,8 +12,7 @@
 #include "memory.h"
 #include "macros86.h"
 #include "doshelpers.h"
-
-#include "keyb_server.h"
+#include "keyboard/keyb_server.h"
 
 /* some other useful definitions */
 
@@ -59,56 +58,56 @@ bios_hlt_blk:
 /* ======================= Addr = F800:4800 (FC800) */
 	.globl	DPMI_dummy_start
 DPMI_dummy_start:
-/* ======================= Addr = F800:4807 (FC807) */
+/* ======================= Addr = F800:4800 (FC800) */
 	.globl	DPMI_dpmi_init
 DPMI_dpmi_init:
 	hlt
 	lret
-/* ======================= Addr = F800:480A (FC80A) */
+/* ======================= Addr = F800:4802 (FC802) */
 	.globl	DPMI_return_from_dos
 DPMI_return_from_dos:
 	hlt
-/* ======================= Addr = F800:480B (FC80B) */
+/* ======================= Addr = F800:4803 (FC803) */
 	.globl	DPMI_return_from_rmint
 DPMI_return_from_rmint:
 	hlt
-/* ======================= Addr = F800:480C (FC80C) */
+/* ======================= Addr = F800:4804 (FC804) */
 	.globl	DPMI_return_from_realmode
 DPMI_return_from_realmode:
 	hlt
-/* ======================= Addr = F800:480D (FC80D) */
+/* ======================= Addr = F800:4805 (FC805) */
 	.globl	DPMI_return_from_dos_memory
 DPMI_return_from_dos_memory:
 	hlt
-/* ======================= Addr = F800:480E (FC80E) */
+/* ======================= Addr = F800:4806 (FC806) */
 	.globl DPMI_int1c
 DPMI_int1c:
 	hlt
 	iret
-/* ======================= Addr = F800:4810 (FC810) */
+/* ======================= Addr = F800:4808 (FC808) */
 	.globl	DPMI_int23
 DPMI_int23:
 	hlt
 	iret
-/* ======================= Addr = F800:4812 (FC812) */
+/* ======================= Addr = F800:480A (FC80A) */
 	.globl	DPMI_int24
 DPMI_int24:
 	hlt
 	iret
-/* ======================= Addr = F800:4814 (FC814) */
+/* ======================= Addr = F800:480C (FC80C) */
 	.globl	DPMI_raw_mode_switch_rm
 DPMI_raw_mode_switch_rm:
 	hlt
-/* ======================= Addr = F800:4816 (FC816) */
+/* ======================= Addr = F800:480D (FC80D) */
 	.globl	DPMI_save_restore_rm
 DPMI_save_restore_rm:
 	hlt
 	lret
-/* ======================= Addr = F800:4817 (FC817) */
+/* ======================= Addr = F800:480F (FC80F) */
 	.globl	DPMI_return_from_dosext
 DPMI_return_from_dosext:
 	hlt
-/* ======================= Addr = F800:4818 (FC818) */
+/* ======================= Addr = F800:4810 (FC810) */
 	.globl	DPMI_dummy_end
 DPMI_dummy_end:
 
@@ -809,14 +808,14 @@ done_read:
 	popl	%esi
 	iret
 
-        .align 4,0
+	.align 4,0
 MSDOS_lr_entry:
-        .globl  MSDOS_lr_entry_ip
+	.globl  MSDOS_lr_entry_ip
 MSDOS_lr_entry_ip:
-        .word 0
-        .globl  MSDOS_lr_entry_cs
+	.word 0
+	.globl  MSDOS_lr_entry_cs
 MSDOS_lr_entry_cs:
-        .word 0
+	.word 0
 
 /* ======================= Addr = F000:F4A0 (FF4A0) */
 	.org	((DOS_LONG_WRITE_SEG - BIOSSEG) << 4) + DOS_LONG_WRITE_OFF
@@ -863,14 +862,74 @@ done_write:
 	popl	%esi
 	iret
 
-        .align 4,0
+	.align 4,0
 MSDOS_lw_entry:
-        .globl  MSDOS_lw_entry_ip
+	.globl  MSDOS_lw_entry_ip
 MSDOS_lw_entry_ip:
-        .word 0
-        .globl  MSDOS_lw_entry_cs
+	.word 0
+	.globl  MSDOS_lw_entry_cs
 MSDOS_lw_entry_cs:
-        .word 0
+	.word 0
+
+/* ======================= INT_REVECT macro */
+.macro int_rvc inum
+	.globl int_rvc_start_\inum
+int_rvc_start_\inum:
+	shll $16,%eax
+	shll $16,%ebx
+	movb $DOS_HELPER_REVECT_HELPER,%al
+	movb $DOS_SUBHELPER_RVC_CALL,%bl
+	movb $0x\inum,%ah
+	movb $12,%bh		/* stack offset */
+	int $DOS_HELPER_INT
+	jnz 9f			/* handled */
+	jc 2f			/* second_revect */
+	ljmp *%cs:int_rvc_data_\inum-bios_f000
+
+2:
+	pushw %ax
+	pushfw
+	lcall *%cs:int_rvc_data_\inum-bios_f000
+	jnc 12f			/* handled */
+	clc
+	shll $16,%eax
+	shll $16,%ebx
+	shll $16,%ecx
+	popw %cx
+	movb $DOS_HELPER_REVECT_HELPER,%al
+	movb $DOS_SUBHELPER_RVC2_CALL,%bl
+	movb $0x\inum,%ah
+	movb $12,%bh		/* stack offset */
+	int $DOS_HELPER_INT
+
+9:
+	jc 11f
+20:
+	andw $0xfffe,4(%esp)	/* clear CF */
+	iret
+11:
+	orw $1,4(%esp)		/* set CF */
+	iret
+12:
+	addw $2,%sp		/* skip saved ax */
+	jmp 20b
+
+	.align 4,0
+int_rvc_data_\inum:
+	.globl int_rvc_ip_\inum
+int_rvc_ip_\inum:
+	.word 0
+	.globl int_rvc_cs_\inum
+int_rvc_cs_\inum:
+	.word 0
+.endm
+
+/* ======================= Addr = F000:F500 (FF500) */
+	.org	((INT_RVC_SEG - BIOSSEG) << 4) + INT_RVC_21_OFF
+	int_rvc 21
+/* ======================= Addr = F000:F580 (FF580) */
+	.org	((INT_RVC_SEG - BIOSSEG) << 4) + INT_RVC_2f_OFF
+	int_rvc 2f
 
 	.globl  bios_f000_endpart1
 bios_f000_endpart1:

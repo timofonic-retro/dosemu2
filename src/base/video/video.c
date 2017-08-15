@@ -27,7 +27,7 @@
 #include "mapping.h"
 #include "utilities.h"
 #include "pci.h"
-#include "keyb_clients.h"
+#include "keyboard/keyb_clients.h"
 #include "video.h"
 
 struct video_system *Video;
@@ -198,10 +198,12 @@ static int video_init(void)
   if (!config.term && config.cardtype != CARD_NONE && using_kms())
   {
     config.vga = config.console_video = config.mapped_bios = config.pci_video = 0;
+#if 0
+    /* sdl2 is hopeless on KMS - disable */
     warn("KMS detected: using SDL mode.\n");
-#ifdef SDL_SUPPORT
     config.sdl = 1;
 #else
+    warn("KMS detected: using terminal mode.\n");
     config.term = 1;
 #endif
   }

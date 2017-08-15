@@ -194,7 +194,7 @@ typedef struct config_info {
        int     X_lfb;			/* support VESA LFB modes */
        int     X_pm_interface;		/* support protected mode interface */
        int     X_background_pause;	/* pause xdosemu if it loses focus */
-       boolean sdl_swrend;		/* Don't accelerate SDL with OpenGL */
+       boolean sdl_hwrend;		/* accelerate SDL with OpenGL */
        boolean fullrestore;
        boolean force_vt_switch;         /* in case of console_video force switch to emu VT at start */
        int     dualmon;
@@ -250,7 +250,8 @@ typedef struct config_info {
        unsigned int ems_frame;
        int ems_uma_pages, ems_cnv_pages;
        int dpmi, pm_dos_api, no_null_checks;
-       uintptr_t dpmi_base;
+       uint32_t dpmi_lin_rsv_base;
+       uint32_t dpmi_lin_rsv_size;
 
        int sillyint;            /* IRQ numbers for Silly Interrupt Generator
        				   (bitmask, bit3..15 ==> IRQ3 .. IRQ15) */
@@ -346,6 +347,7 @@ extern void cpu_setup(void);
 extern void cpu_reset(void);
 extern void real_run_int(int);
 #define run_int real_run_int
+extern void mfs_reset(void);
 extern int mfs_redirector(void);
 extern int mfs_lfn(void);
 extern int int10(void);

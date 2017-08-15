@@ -1223,24 +1223,32 @@ static void leave_lpms(struct sigcontext *scp)
   }
 }
 
+/* note: the below register translations are used only when
+ * calling some (non-msdos.c) real-mode interrupts reflected
+ * from protected mode int instruction. They are not used by
+ * any DPMI API services that call to real-mode, like 0x301, 0x302.
+ * So we use the conservative approach of preserving the high
+ * register words in protected mode, and zero out high register
+ * words in real mode. The preserving may be needed because some
+ * realmode int handlers may trash the high register words. */
 static void pm_to_rm_regs(struct sigcontext *scp, unsigned int mask)
 {
   if (mask & (1 << eflags_INDEX))
     REG(eflags) = eflags_VIF(_eflags);
   if (mask & (1 << eax_INDEX))
-    REG(eax) = _eax;
+    REG(eax) = _LWORD(eax);
   if (mask & (1 << ebx_INDEX))
-    REG(ebx) = _ebx;
+    REG(ebx) = _LWORD(ebx);
   if (mask & (1 << ecx_INDEX))
-    REG(ecx) = _ecx;
+    REG(ecx) = _LWORD(ecx);
   if (mask & (1 << edx_INDEX))
-    REG(edx) = _edx;
+    REG(edx) = _LWORD(edx);
   if (mask & (1 << esi_INDEX))
-    REG(esi) = _esi;
+    REG(esi) = _LWORD(esi);
   if (mask & (1 << edi_INDEX))
-    REG(edi) = _edi;
+    REG(edi) = _LWORD(edi);
   if (mask & (1 << ebp_INDEX))
-    REG(ebp) = _ebp;
+    REG(ebp) = _LWORD(ebp);
 }
 
 static void rm_to_pm_regs(struct sigcontext *scp, unsigned int mask)
@@ -1248,21 +1256,23 @@ static void rm_to_pm_regs(struct sigcontext *scp, unsigned int mask)
   if (mask & (1 << eflags_INDEX))
     _eflags = 0x0202 | (0x0dd5 & REG(eflags)) | dpmi_mhp_TF;
   if (mask & (1 << eax_INDEX))
-    _eax = REG(eax);
+    _LWORD(eax) = LWORD(eax);
   if (mask & (1 << ebx_INDEX))
-    _ebx = REG(ebx);
+    _LWORD(ebx) = LWORD(ebx);
   if (mask & (1 << ecx_INDEX))
-    _ecx = REG(ecx);
+    _LWORD(ecx) = LWORD(ecx);
   if (mask & (1 << edx_INDEX))
-    _edx = REG(edx);
+    _LWORD(edx) = LWORD(edx);
   if (mask & (1 << esi_INDEX))
-    _esi = REG(esi);
+    _LWORD(esi) = LWORD(esi);
   if (mask & (1 << edi_INDEX))
-    _edi = REG(edi);
+    _LWORD(edi) = LWORD(edi);
   if (mask & (1 << ebp_INDEX))
-    _ebp = REG(ebp);
+    _LWORD(ebp) = LWORD(ebp);
 }
 
+/* the below are used by DPMI API realmode services, and should
+ * be able to pass full 32bit register values. */
 static void DPMI_save_rm_regs(struct RealModeCallStructure *rmreg)
 {
     rmreg->edi = REG(edi);
@@ -2041,9 +2051,7 @@ err:
     }
 #ifdef SHOWREGS
     if (debug_level('e')==0) {
-      set_debug_level('g', debug_level('g') + 1);
-      show_regs(__FILE__, __LINE__);
-      set_debug_level('g', debug_level('g') - 1);
+      show_regs();
     }
 #endif
     break;
@@ -2650,22 +2658,9 @@ static void chain_rm_int(struct sigcontext *scp, int i)
   D_printf("DPMI: Calling real mode handler for int 0x%02x\n", i);
   save_rm_regs();
   pm_to_rm_regs(scp, ~0);
-  /* we need the below hack to avoid the register translation for
-   * HW interrupts. Such translation may corrupt the PM context.
-   * Note that even saving/restoring PM regs does not help because
-   * the app can call the default inthandler from the middle of its
-   * PM inthandler. This means the PM code will be executed after
-   * the RM code returned but before we can restore the PM context.
-   * This is enough to cause crash. */
-  if (i <= 0x33) {
-    SREG(cs) = DPMI_SEG;
-    REG(eip) = DPMI_OFF + HLT_OFF(DPMI_return_from_rmint);
-    do_int(i);
-  } else {
-    SREG(cs) = DPMI_SEG;
-    REG(eip) = DPMI_OFF + HLT_OFF(DPMI_return_from_dos);
-    real_run_int(i);
-  }
+  SREG(cs) = DPMI_SEG;
+  REG(eip) = DPMI_OFF + HLT_OFF(DPMI_return_from_rmint);
+  do_int(i);
 }
 
 static void chain_hooked_int(struct sigcontext *scp, int i)
@@ -3044,8 +3039,10 @@ void dpmi_setup(void)
       }
     }
 
-    if (dpmi_alloc_pool())
+    if (dpmi_alloc_pool()) {
 	leavedos(2);
+	return;
+    }
     dpmi_free_memory = dpmi_total_memory;
     host_pm_block_root = calloc(1, sizeof(dpmi_pm_block_root));
 
@@ -3111,15 +3108,6 @@ err:
     error("DPMI initialization failed, disabling\n");
 err2:
     config.dpmi = 0;
-}
-
-unsigned long dpmi_mem_size(void)
-{
-    return PAGE_ALIGN(config.dpmi * 1024) +
-      PAGE_ALIGN(DPMI_pm_stack_size * DPMI_MAX_CLIENTS) +
-      PAGE_ALIGN(LDT_ENTRIES*LDT_ENTRY_SIZE) +
-      PAGE_ALIGN(DPMI_sel_code_end-DPMI_sel_code_start) +
-      (5 << PAGE_SHIFT); /* 5 extra pages */
 }
 
 void dpmi_reset(void)
@@ -4349,7 +4337,7 @@ void dpmi_realmode_hlt(unsigned int lina)
 
     D_printf("DPMI: Return from Real Mode Procedure\n");
 #ifdef SHOWREGS
-    show_regs(__FILE__, __LINE__);
+    show_regs();
 #endif
     DPMI_save_rm_regs(SEL_ADR_X(_es, _edi));
     restore_rm_regs();
@@ -4424,7 +4412,7 @@ done:
     }
     D_printf("DPMI: switching from real to protected mode\n");
 #ifdef SHOWREGS
-    show_regs(__FILE__, __LINE__);
+    show_regs();
 #endif
     dpmi_set_pm(1);
     if (DPMI_CLIENT.is_32) {
@@ -4761,4 +4749,12 @@ void dpmi_done(void)
   co_thread_cleanup(co_handle);
   if (in_dpmic_thr)
     coopth_cancel(dpmi_ctid);
+}
+
+/* for debug only */
+struct sigcontext *dpmi_get_scp(void)
+{
+  if (!in_dpmi)
+    return NULL;
+  return &DPMI_CLIENT.stack_frame;
 }

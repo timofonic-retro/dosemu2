@@ -37,8 +37,6 @@
 #include "int.h"
 #include "disks.h"
 #include "ipx.h"                /* TRB - add support for ipx */
-#include "keymaps.h"
-#include "keyb_server.h"
 #include "bitops.h"
 #include "coopth.h"
 #include "utilities.h"
@@ -97,7 +95,7 @@ int vm86_fault(struct sigcontext *scp)
 	goto sgleave;
       }
 #if 0
-      show_regs(__FILE__, __LINE__);
+      show_regs();
 #endif /* 0 */
       csp = SEG_ADR((unsigned char *), cs, ip);
       /* this one is for CPU detection programs
@@ -146,14 +144,14 @@ sgleave:
       flush_log();  /* important! else we flush to stderr */
       dbg_fd = stderr;
       set_debug_level('g',1);
-      show_regs(__FILE__, __LINE__);
+      show_regs();
       set_debug_level('g', auxg);
       flush_log();
       dbg_fd = aux;
     }
 #endif
 
-    show_regs(__FILE__, __LINE__);
+    show_regs();
     flush_log();
     leavedos_from_sig(4);
   }
@@ -375,7 +373,7 @@ static void vm86_GP_fault(void)
 #endif
     set_debug_level('g', 1);
     error("general protection at %p: %x\n", lina,*lina);
-    show_regs(__FILE__, __LINE__);
+    show_regs();
     show_ints(0, 0x33);
     fatalerr = 4;
     leavedos(fatalerr);		/* shouldn't return */
@@ -594,6 +592,8 @@ void loopstep_run_vm86(void)
     uncache_time();
     if (!dosemu_frozen && !in_dpmi_pm() && !signal_pending())
 	run_vm86();
+    if (dosemu_frozen)
+	dosemu_sleep();
     do_periodic_stuff();
     hardware_run();
     pic_run();		/* trigger any hardware interrupts requested */

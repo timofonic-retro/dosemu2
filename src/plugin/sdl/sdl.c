@@ -50,7 +50,7 @@
 #include "vgatext.h"
 #include "render.h"
 #include "keyb_SDL.h"
-#include "keyb_clients.h"
+#include "keyboard/keyb_clients.h"
 #include "dos2linux.h"
 #include "utilities.h"
 #include "sdl.h"
@@ -72,6 +72,9 @@ static void toggle_grab(int kbd);
 static void window_grab(int on, int kbd);
 static struct bitmap_desc lock_surface(void);
 static void unlock_surface(void);
+#if THREADED_REND
+static void *render_thread(void *arg);
+#endif
 
 static struct video_system Video_SDL = {
   SDL_priv_init,
@@ -107,6 +110,10 @@ static pthread_mutex_t rects_mtx = PTHREAD_MUTEX_INITIALIZER;
 static int sdl_rects_num;
 static pthread_mutex_t rend_mtx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t tex_mtx = PTHREAD_MUTEX_INITIALIZER;
+#if THREADED_REND
+static pthread_t rend_thr;
+static sem_t rend_sem;
+#endif
 
 static int force_grab = 0;
 static int grab_active = 0;
@@ -152,13 +159,14 @@ static void preinit_x11_support(void)
 {
 #ifdef USE_DL_PLUGINS
   void *handle = load_plugin("X");
-  X_register_speaker = dlsym(handle, "X_register_speaker");
-  X_load_text_font = dlsym(handle, "X_load_text_font");
-  X_pre_init = dlsym(handle, "X_pre_init");
-  X_close_text_display = dlsym(handle, "X_close_text_display");
-  X_handle_text_expose = dlsym(handle, "X_handle_text_expose");
-  X_set_resizable = dlsym(handle, "X_set_resizable");
-  X_process_key = dlsym(handle, "X_process_key");
+  assert(handle);
+  X_register_speaker = DLSYM_ASSERT(handle, "X_register_speaker");
+  X_load_text_font = DLSYM_ASSERT(handle, "X_load_text_font");
+  X_pre_init = DLSYM_ASSERT(handle, "X_pre_init");
+  X_close_text_display = DLSYM_ASSERT(handle, "X_close_text_display");
+  X_handle_text_expose = DLSYM_ASSERT(handle, "X_handle_text_expose");
+  X_set_resizable = DLSYM_ASSERT(handle, "X_set_resizable");
+  X_process_key = DLSYM_ASSERT(handle, "X_process_key");
   X_pre_init();
   X_handle = handle;
 #endif
@@ -222,7 +230,7 @@ int SDL_priv_init(void)
 int SDL_init(void)
 {
   Uint32 flags = SDL_WINDOW_HIDDEN;
-  Uint32 rflags = config.sdl_swrend ? SDL_RENDERER_SOFTWARE : 0;
+  Uint32 rflags = config.sdl_hwrend ? 0 : SDL_RENDERER_SOFTWARE;
   int bpp, features;
   Uint32 rm, gm, bm, am;
 
@@ -291,6 +299,12 @@ int SDL_init(void)
     return -1;
   }
 
+#if THREADED_REND
+  sem_init(&rend_sem, 0, 0);
+  pthread_create(&rend_thr, NULL, render_thread, NULL);
+  pthread_setname_np(rend_thr, "dosemu: sdl_r");
+#endif
+
   c_printf("VID: SDL plugin initialization completed\n");
 
   return 0;
@@ -302,6 +316,10 @@ err:
 
 void SDL_close(void)
 {
+#if THREADED_REND
+  pthread_cancel(rend_thr);
+  pthread_join(rend_thr, NULL);
+#endif
   remapper_done();
   vga_emu_done();
 #ifdef X_SUPPORT
@@ -325,13 +343,13 @@ static void do_redraw(void)
 
 static void do_redraw_full(void)
 {
-  pthread_mutex_lock(&tex_mtx);
   pthread_mutex_lock(&rend_mtx);
   SDL_RenderClear(renderer);
+  pthread_mutex_lock(&tex_mtx);
   SDL_RenderCopy(renderer, texture_buf, NULL, NULL);
+  pthread_mutex_unlock(&tex_mtx);
   SDL_RenderPresent(renderer);
   pthread_mutex_unlock(&rend_mtx);
-  pthread_mutex_unlock(&tex_mtx);
 }
 
 static void SDL_update(void)
@@ -366,6 +384,15 @@ static struct bitmap_desc lock_surface(void)
   return BMP(surface->pixels, win_width, win_height, surface->pitch);
 }
 
+static void do_rend(void)
+{
+  pthread_mutex_lock(&rend_mtx);
+  SDL_RenderClear(renderer);
+  pthread_mutex_lock(&tex_mtx);
+  SDL_RenderCopy(renderer, texture_buf, NULL, NULL);
+  pthread_mutex_unlock(&tex_mtx);
+  pthread_mutex_unlock(&rend_mtx);
+}
 
 static void unlock_surface(void)
 {
@@ -385,11 +412,25 @@ static void unlock_surface(void)
     return;
   }
 
-  pthread_mutex_lock(&rend_mtx);
-  SDL_RenderClear(renderer);
-  SDL_RenderCopy(renderer, texture_buf, NULL, NULL);
-  pthread_mutex_unlock(&rend_mtx);
+#if THREADED_REND
+  sem_post(&rend_sem);
+#else
+  do_rend();
+#endif
 }
+
+#if THREADED_REND
+static void *render_thread(void *arg)
+{
+  while (1) {
+    sem_wait(&rend_sem);
+    render_mode_lock();
+    do_rend();
+    render_mode_unlock();
+  }
+  return NULL;
+}
+#endif
 
 int SDL_set_videomode(struct vid_mode_params vmp)
 {
@@ -481,6 +522,8 @@ static void SDL_change_mode(int x_res, int y_res, int w_x_res, int w_y_res)
     SDL_ShowWindow(window);
     SDL_RaiseWindow(window);
     m_cursor_visible = 1;
+    if (config.X_fullscreen)
+      render_gain_focus();
   }
   SDL_RenderClear(renderer);
   SDL_RenderPresent(renderer);
@@ -739,6 +782,9 @@ static void SDL_handle_events(void)
 	SDL_redraw();
 	break;
       case SDL_WINDOWEVENT_ENTER:
+        /* ignore fake enter events */
+        if (config.X_fullscreen)
+          break;
         mouse_drag_to_corner(m_x_res, m_y_res);
         break;
       }
@@ -763,7 +809,8 @@ static void SDL_handle_events(void)
 	    break;
 	  }
 	}
-	if (keysym.sym == SDLK_LSHIFT || keysym.sym == SDLK_RSHIFT) {
+	if (vga.mode_class == TEXT &&
+	    (keysym.sym == SDLK_LSHIFT || keysym.sym == SDLK_RSHIFT)) {
 	  copypaste = 1;
 	  /* enable cursor for copy/paste */
 	  if (!m_cursor_visible)
@@ -774,9 +821,11 @@ static void SDL_handle_events(void)
       clear_if_in_selection();
 #endif
 #ifdef X_SUPPORT
+#if HAVE_XKB
       if (x11_display && config.X_keycode)
 	SDL_process_key_xkb(x11_display, event.key);
       else
+#endif
 #endif
 	SDL_process_key(event.key);
       break;
@@ -790,9 +839,11 @@ static void SDL_handle_events(void)
 	    SDL_ShowCursor(SDL_DISABLE);
       }
 #ifdef X_SUPPORT
+#if HAVE_XKB
       if (x11_display && config.X_keycode)
 	SDL_process_key_xkb(x11_display, event.key);
       else
+#endif
 #endif
 	SDL_process_key(event.key);
       break;
@@ -854,6 +905,9 @@ static void SDL_handle_events(void)
       else
 	mouse_move_absolute(event.motion.x, event.motion.y, m_x_res,
 			    m_y_res);
+      break;
+    case SDL_MOUSEWHEEL:
+      mouse_move_wheel(-event.wheel.y);
       break;
     case SDL_QUIT:
       leavedos(0);

@@ -1303,7 +1303,7 @@ void disk_reset(void)
   subst_file_ext(NULL);
   for (i = 0; i < 26; i++)
     ResetRedirection(i);
-  set_int21_revectored(redir_state = 1);
+  redir_state = 1;
   for (dp = disktab; dp < &disktab[FDISKS]; dp++) {
     if(dp->type == DIR_TYPE) {
       if (dp->fatfs) fatfs_done(dp);
@@ -1315,6 +1315,27 @@ void disk_reset(void)
       if (dp->fatfs) fatfs_done(dp);
       fatfs_init(dp);
     }
+  }
+}
+
+static void hdisk_reset(int num)
+{
+  struct disk *dp;
+
+  disk_reset2();
+
+  subst_file_ext(NULL);
+  for (dp = hdisktab; dp < &hdisktab[HDISKS]; dp++) {
+    if(dp->type == DIR_TYPE) {
+      if (dp->fatfs)
+        fatfs_done(dp);
+    }
+  }
+  if (HDISKS > num)
+    HDISKS = num;
+  for (dp = hdisktab; dp < &hdisktab[HDISKS]; dp++) {
+    if(dp->type == DIR_TYPE)
+      fatfs_init(dp);
   }
 }
 
@@ -1338,7 +1359,8 @@ int disk_validate_boot_part(struct disk *dp)
   d_printf("DISK: changing hdtype from %i to %i\n", dp->hdtype, hdtype);
   dp->hdtype = hdtype;
   dp->sectors = -1;
-  disk_reset();
+  /* some old DOSes only boot if there are no more than 2 drives */
+  hdisk_reset(2);
   return fatfs_is_bootable(dp->fatfs);
 }
 
@@ -1433,7 +1455,7 @@ int int13(void)
 
       HI(ax) = DERR_NOTFOUND;
       REG(eflags) |= CF;
-      show_regs(__FILE__, __LINE__);
+      show_regs();
       break;
     }
 
@@ -1478,7 +1500,7 @@ int int13(void)
     if (checkdp_val || head >= dp->heads ||
 	sect >= dp->sectors || track >= dp->tracks) {
       error("Sector not found 3!\n");
-      show_regs(__FILE__, __LINE__);
+      show_regs();
       HI(ax) = DERR_NOTFOUND;
       REG(eflags) |= CF;
       break;
@@ -1486,7 +1508,7 @@ int int13(void)
 
     if (dp->rdonly) {
       W_printf("write protect!\n");
-      show_regs(__FILE__, __LINE__);
+      show_regs();
       if (dp->floppy)
 	HI(ax) = DERR_WP;
       else
@@ -1811,7 +1833,7 @@ int int13(void)
 
       HI(ax) = DERR_NOTFOUND;
       REG(eflags) |= CF;
-      show_regs(__FILE__, __LINE__);
+      show_regs();
       break;
     }
 
@@ -1867,13 +1889,13 @@ int int13(void)
 
       HI(ax) = DERR_NOTFOUND;
       REG(eflags) |= CF;
-      show_regs(__FILE__, __LINE__);
+      show_regs();
       break;
     }
 
     if (dp->rdonly) {
       d_printf("DISK is write protected!\n");
-      show_regs(__FILE__, __LINE__);
+      show_regs();
       if (dp->floppy)
 	HI(ax) = DERR_WP;
       else
@@ -1935,7 +1957,7 @@ int int13(void)
 
       HI(ax) = DERR_NOTFOUND;
       REG(eflags) |= CF;
-      show_regs(__FILE__, __LINE__);
+      show_regs();
       break;
     }
 
@@ -1973,7 +1995,7 @@ int int13(void)
   default:
     d_printf("disk error, unknown command: int13, ax=0x%x\n",
 	  LWORD(eax));
-    show_regs(__FILE__, __LINE__);
+    show_regs();
     CARRY;
     break;
   }

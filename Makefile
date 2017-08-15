@@ -1,9 +1,7 @@
 # Makefile for DOSEMU
 #
 
-SHELL=/bin/bash
-
-all: default configure src/include/config.h
+all: default
 
 srcdir=.
 top_builddir=.
@@ -16,42 +14,39 @@ REALTOPDIR?=$(srcdir)
 $(REALTOPDIR)/configure: $(REALTOPDIR)/configure.ac $(REALTOPDIR)/install-sh
 	cd $(@D) && autoreconf -v -I m4
 
-config.status: $(REALTOPDIR)/configure
+config.status src/include/config.h: $(REALTOPDIR)/configure
 	$<
 
-Makefile.conf: $(srcdir)/Makefile.conf.in $(srcdir)/configure $(srcdir)/default-configure
-	@echo "Running $(srcdir)/default-configure ..."
-	$(srcdir)/default-configure
+Makefile.conf: $(REALTOPDIR)/Makefile.conf.in $(REALTOPDIR)/configure $(REALTOPDIR)/default-configure
+	@echo "Running $(REALTOPDIR)/default-configure ..."
+	$(REALTOPDIR)/default-configure
 
 install: changelog
 
-default clean realclean install uninstall: config.status
+default clean realclean install uninstall: config.status src/include/config.h
 	@$(MAKE) -C src $@
-
-dosbin:
-	@$(MAKE) SUBDIR:=commands -C src/commands dosbin
+	@$(MAKE) -C man $@
 
 docs:
-	@$(MAKE) SUBDIR:=doc -C src/doc all
-	@$(MAKE) SUBDIR:=doc -C src/doc install
+	@$(MAKE) -C src/doc all
+	@$(MAKE) -C src/doc install
 
 docsclean:
-	@$(MAKE) SUBDIR:=doc -C src/doc clean
+	@$(MAKE) -C src/doc clean
 
-$(PACKAGE_NAME).spec: $(PACKAGE_NAME).spec.in VERSION
-	@$(MAKE) -C src ../$@
+$(PACKAGE_NAME).spec: $(REALTOPDIR)/$(PACKAGE_NAME).spec.in $(top_builddir)/config.status
+	cd $(top_builddir) && ./config.status
 
-GIT_SYM := $(shell git rev-parse --symbolic-full-name HEAD)
-GIT_REV := $(shell git rev-parse --git-path $(GIT_SYM))
-
+GIT_REV := $(shell $(REALTOPDIR)/git-rev.sh)
+.LOW_RESOLUTION_TIME: $(GIT_REV)
 $(PACKETNAME).tar.gz: $(GIT_REV) $(PACKAGE_NAME).spec changelog
 	rm -f $(PACKETNAME).tar.gz
-	git archive -o $(PACKETNAME).tar --prefix=$(PACKETNAME)/ HEAD
-	tar rf $(PACKETNAME).tar --add-file=$(PACKAGE_NAME).spec
-	if [ -f $(fdtarball) ]; then \
-		tar rf $(PACKETNAME).tar --transform 's,^,$(PACKETNAME)/,' --add-file=$(fdtarball); \
-	fi
+	(cd $(REALTOPDIR); git archive -o $(abs_top_builddir)/$(PACKETNAME).tar --prefix=$(PACKETNAME)/ HEAD)
 	tar rf $(PACKETNAME).tar --transform 's,^,$(PACKETNAME)/,' --add-file=changelog; \
+	tar rf $(PACKETNAME).tar --add-file=$(PACKAGE_NAME).spec
+	if [ -f "$(fdtarball)" ]; then \
+		tar -Prf $(PACKETNAME).tar --transform 's,^$(dir $(fdtarball)),$(PACKETNAME)/,' --add-file=$(fdtarball); \
+	fi
 	gzip $(PACKETNAME).tar
 
 dist: $(PACKETNAME).tar.gz
@@ -61,13 +56,11 @@ rpm: $(PACKETNAME).tar.gz $(PACKAGE_NAME).spec
 	rm -f $(PACKETNAME).tar.gz
 
 deb:
-	# about to zap `build' directory...
-	sleep 3 && rm -rf build
 	debuild -i -us -uc -b
 
 changelog:
-	if [ -d $(srcdir)/.git -o -f $(srcdir)/.git ]; then \
-		git --git-dir=$(srcdir)/.git log >$@ ; \
+	if [ -d $(top_srcdir)/.git -o -f $(top_srcdir)/.git ]; then \
+		git --git-dir=$(top_srcdir)/.git log >$@ ; \
 	else \
 		echo "Unofficial build by `whoami`@`hostname`, `date`" >$@ ; \
 	fi
@@ -93,7 +86,6 @@ pristine distclean mrproper:  Makefile.conf docsclean
 	rm -f src/include/config.h
 	rm -f src/include/stamp-h1
 	rm -f src/include/config.h.in
-	rm -f src/include/confpath.h
 	rm -f src/include/version.h
 	rm -f src/include/plugin_*.h
 	rm -f `find . -name '*~'`
@@ -102,10 +94,9 @@ pristine distclean mrproper:  Makefile.conf docsclean
 	rm -f `find . -name '*[\.]orig'`
 	rm -f `find . -name '*[\.]rej'`
 	rm -f gen*.log
-	rm -f man/dosemu.1 man/dosemu.bin.1 man/ru/dosemu.1 man/ru/dosemu.bin.1
 	rm -f config.sub config.guess
 	rm -rf 2.*
-	$(srcdir)/mkpluginhooks clean
+	$(REALTOPDIR)/mkpluginhooks clean
 
 tar: distclean
 	VERSION=`cat VERSION` && cd .. && tar czvf dosemu-$$VERSION.tgz dosemu-$$VERSION

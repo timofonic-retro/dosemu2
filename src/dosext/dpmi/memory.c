@@ -32,6 +32,7 @@
 #include "mapping.h"
 #include "smalloc.h"
 #include "dpmi.h"
+#include "dpmisel.h"
 #include "dmemory.h"
 
 #ifndef PAGE_SHIFT
@@ -43,8 +44,17 @@ unsigned long dpmi_free_memory;           /* how many bytes memory client */
 unsigned long pm_block_handle_used;       /* tracking handle */
 
 static smpool mem_pool;
-static void *mpool_ptr = MAP_FAILED;
-static unsigned long memsize = 0;
+static void *dpmi_lin_rsv_base;
+static void *dpmi_base;
+
+
+void dpmi_set_mem_bases(void *rsv_base, void *main_base)
+{
+    dpmi_lin_rsv_base = rsv_base;
+    dpmi_base = main_base;
+    c_printf("DPMI memory mapped to %p (reserve) and to %p (main)\n",
+        rsv_base, main_base);
+}
 
 /* utility routines */
 
@@ -132,32 +142,39 @@ static int uncommit(void *ptr, size_t size)
   return 1;
 }
 
+unsigned long dpmi_mem_size(void)
+{
+    return PAGE_ALIGN(config.dpmi * 1024) +
+      PAGE_ALIGN(DPMI_pm_stack_size * DPMI_MAX_CLIENTS) +
+      PAGE_ALIGN(LDT_ENTRIES*LDT_ENTRY_SIZE) +
+      PAGE_ALIGN(DPMI_sel_code_end-DPMI_sel_code_start) +
+      (5 << PAGE_SHIFT); /* 5 extra pages */
+}
+
+void dump_maps(void)
+{
+    char buf[64];
+
+    fprintf(dbg_fd, "\nmemory maps dump:\n");
+    sprintf(buf, "cat /proc/%i/maps >&%i", getpid(), fileno(dbg_fd));
+    system(buf);
+}
+
 int dpmi_alloc_pool(void)
 {
+    uint32_t memsize = dpmi_mem_size();
+    c_printf("DPMI: mem init, mpool is %d bytes at %p\n", memsize, dpmi_base);
     /* Create DPMI pool */
-    if (config.dpmi_base == -1) {
-      error("MAPPING: cannot create mem pool for DPMI\n");
-      return -1;
-    }
-
-    memsize = dpmi_mem_size();
-    mpool_ptr = (void *)config.dpmi_base;
-    c_printf("DPMI: mem init, mpool is %ld bytes at %p\n", memsize, mpool_ptr);
-    sminit_com(&mem_pool, mpool_ptr, memsize, commit, uncommit);
+    sminit_com(&mem_pool, dpmi_base, memsize, commit, uncommit);
     dpmi_total_memory = config.dpmi * 1024;
 
-    D_printf("DPMI: dpmi_free_memory available 0x%lx\n",dpmi_total_memory);
+    D_printf("DPMI: dpmi_free_memory available 0x%lx\n", dpmi_total_memory);
     return 0;
 }
 
 void dpmi_free_pool(void)
 {
-    if (!memsize)
-	return;
     smdestroy(&mem_pool);
-    munmap(mpool_ptr, memsize);
-    mpool_ptr = MAP_FAILED;
-    memsize = 0;
 }
 
 static int SetAttribsForPage(unsigned int ptr, us attr, us old_attr)
@@ -292,11 +309,12 @@ dpmi_pm_block * DPMI_malloc(dpmi_pm_block_root *root, unsigned int size)
 
 /* DPMImallocLinear allocate a memory block at a fixed address. */
 dpmi_pm_block * DPMI_mallocLinear(dpmi_pm_block_root *root,
-  unsigned int base, unsigned int size, int committed)
+  dosaddr_t base, unsigned int size, int committed)
 {
     dpmi_pm_block *block;
     unsigned char *realbase;
     int i;
+    int cap = MAPPING_DPMI | MAPPING_SCRATCH;
 
    /* aligned size to PAGE size */
     size = PAGE_ALIGN(size);
@@ -304,6 +322,10 @@ dpmi_pm_block * DPMI_mallocLinear(dpmi_pm_block_root *root,
 	return NULL;
     if (base == 0)
 	base = -1;
+    else if (base < DOSADDR_REL(dpmi_lin_rsv_base) ||
+	    base >= DOSADDR_REL(dpmi_lin_rsv_base) +
+	    config.dpmi_lin_rsv_size * 1024)
+	cap |= MAPPING_NOOVERLAP;
     if (committed && size > dpmi_free_memory)
 	return NULL;
     if ((block = alloc_pm_block(root, size)) == NULL)
@@ -311,7 +333,7 @@ dpmi_pm_block * DPMI_mallocLinear(dpmi_pm_block_root *root,
 
     /* base is just a hint here (no MAP_FIXED). If vma-space is
        available the hint will be block->base */
-    realbase = mmap_mapping(MAPPING_DPMI | MAPPING_SCRATCH | MAPPING_NOOVERLAP,
+    realbase = mmap_mapping(cap,
 	base, size, committed ? PROT_READ | PROT_WRITE | PROT_EXEC : PROT_NONE);
     if (realbase == MAP_FAILED) {
 	free_pm_block(root, block);
@@ -494,7 +516,7 @@ int DPMI_SetPageAttributes(dpmi_pm_block_root *root, unsigned long handle,
     return 0;
   if (!block->linear) {
     D_printf("DPMI: Attempt to set page attributes for inappropriate mem region\n");
-    if (config.no_null_checks)
+    if (config.no_null_checks && offs == 0 && count == 1)
       return 0;
   }
 

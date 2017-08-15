@@ -18,13 +18,13 @@
 #include "emu.h"
 #include "timers.h"
 #include "sig.h"
-#include "keymaps.h"
-#include "keyb_clients.h"
-#include "keyboard.h"
+#include "keyboard/keymaps.h"
+#include "keyboard/keyb_clients.h"
+#include "keyboard/keyboard.h"
 #include "utilities.h"
 #include "video.h"
 #include "env_term.h"
-#include "translate.h"
+#include "translate/translate.h"
 
 #ifndef SLANG_VERSION
 # define SLANG_VERSION 1

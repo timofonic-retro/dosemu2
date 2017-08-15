@@ -110,7 +110,7 @@
 #include <string.h>
 #include "emu86.h"
 #include "dlmalloc.h"
-
+#include "mapping.h"
 #ifdef HOST_ARCH_X86
 #include "codegen-x86.h"
 
@@ -162,7 +162,9 @@ static void _test_(void)
 static int goodmemref(unsigned int m)
 {
 	if (m < 0x110000) return 1;
-	if (m >= config.dpmi_base - TheCPU.mem_base && m <= mMaxMem) return 1;
+	if (mapping_find_hole((uintptr_t)MEM_BASE32(m),
+			(uintptr_t)MEM_BASE32(mMaxMem), 1) == MAP_FAILED)
+		return 1;
 	return 0;
 }
 
@@ -3310,10 +3312,8 @@ unsigned int Exec_x86(TNode *G, int ln)
 		}
 		/* DANGEROUS - can crash dosemu! */
 		if ((debug_level('e')>4) && goodmemref(mem_ref)) {
-		    TryMemRef = 1;
 		    e_printf("*mem_ref [%#08x] = %08x\n",mem_ref,
 			     READ_DWORD(mem_ref));
-		    TryMemRef = 0;
 		}
 	    }
 	}

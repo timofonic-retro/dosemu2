@@ -17,7 +17,7 @@
 #include "vc.h"
 #include "mouse.h"
 #include "serial.h"
-#include "keymaps.h"
+#include "keyboard/keymaps.h"
 #include "memory.h"
 #include "bios.h"
 #include "lpt.h"
@@ -29,7 +29,7 @@
 #include "pktdrvr.h"
 #include "speaker.h"
 #include "sound/sound.h"
-#include "keyb_clients.h"
+#include "keyboard/keyb_clients.h"
 #include "dos2linux.h"
 #include "utilities.h"
 #ifdef X86_EMULATOR
@@ -175,8 +175,8 @@ void dump_config_status(void (*printfunc)(const char *, ...))
 	config.mem_size, config.ext_mem);
     (*print)("ems_size 0x%x\nems_frame 0x%x\n",
         config.ems_size, config.ems_frame);
-    (*print)("umb_a0 %i\numb_b0 %i\numb_f0 %i\ndpmi 0x%x\ndpmi_base 0x%x\npm_dos_api %i\nignore_djgpp_null_derefs %i\n",
-        config.umb_a0, config.umb_b0, config.umb_f0, config.dpmi, config.dpmi_base, config.pm_dos_api, config.no_null_checks);
+    (*print)("umb_a0 %i\numb_b0 %i\numb_f0 %i\ndpmi 0x%x\ndpmi_lin_rsv_base 0x%x\ndpmi_lin_rsv_size 0x%x\npm_dos_api %i\nignore_djgpp_null_derefs %i\n",
+        config.umb_a0, config.umb_b0, config.umb_f0, config.dpmi, config.dpmi_lin_rsv_base, config.dpmi_lin_rsv_size, config.pm_dos_api, config.no_null_checks);
     (*print)("mapped_bios %d\nvbios_file %s\n",
         config.mapped_bios, (config.vbios_file ? config.vbios_file :""));
     (*print)("vbios_copy %d\nvbios_seg 0x%x\nvbios_size 0x%x\n",
@@ -203,7 +203,7 @@ void dump_config_status(void (*printfunc)(const char *, ...))
     (*print)("X_winsize_y %d\nX_gamma %d\nX_fullscreen %d\nvgaemu_memsize 0x%x\n",
         config.X_winsize_y, config.X_gamma, config.X_fullscreen,
 	     config.vgaemu_memsize);
-    (*print)("SDL_swrend %d\n", config.sdl_swrend);
+    (*print)("SDL_hwrend %d\n", config.sdl_hwrend);
     (*print)("vesamode_list %p\nX_lfb %d\nX_pm_interface %d\n",
         config.vesamode_list, config.X_lfb, config.X_pm_interface);
     (*print)("X_keycode %d\nX_font \"%s\"\n",
@@ -590,6 +590,8 @@ static void config_post_process(void)
     }
 #ifdef USE_CONSOLE_PLUGIN
     if (on_console()) {
+	c_printf("CONF: running on console, vga=%i cv=%i\n", config.vga,
+	        config.console_video);
 	if (!can_do_root_stuff && config.console_video) {
 	    /* force use of Slang-terminal on console too */
 	    config.console_video = 0;
@@ -604,6 +606,7 @@ static void config_post_process(void)
     } else
 #endif
     {
+	c_printf("CONF: not running on console\n");
 	if (config.console_keyb == -1) {
 	    config.console_keyb =
 #ifdef USE_SLANG
@@ -653,6 +656,8 @@ static void config_post_process(void)
     }
     c_printf(" uid=%d (cached %d) gid=%d (cached %d)\n",
         geteuid(), get_cur_euid(), getegid(), get_cur_egid());
+    c_printf("CONF: priv operations %s\n",
+            can_do_root_stuff ? "available" : "unavailable");
 
     /* Speaker scrub */
 #ifdef X86_EMULATOR
@@ -909,6 +914,7 @@ config_init(int argc, char **argv)
                 fprintf(stderr, "can't open \"%s\" for writing\n", config.debugout);
                 exit(1);
             }
+            setlinebuf(dbg_fd);
         }
     }
 

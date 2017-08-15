@@ -1,5 +1,5 @@
 dnl Process this file with autoconf to produce a configure script.
-AC_INIT([DOSEMU2], m4_esyscmd([./getversion -s | tr -d '\n']),
+AC_INIT([dosemu2], m4_esyscmd([./getversion -s | tr -d '\n']),
     [https://github.com/stsp/dosemu2/issues], dosemu2)
 dnl AM_SILENT_RULES and AM_DEP_TRACK should not be used explicitly,
 dnl AM_INIT_AUTOMAKE includes them
@@ -8,16 +8,6 @@ AM_DEP_TRACK
 AM_MAINTAINER_MODE
 AC_CONFIG_SRCDIR(src/emu.c)
 AC_PREREQ(2.59)
-AC_GNU_SOURCE
-
-AC_ARG_ENABLE(plugin, [AS_HELP_STRING(
-  [--enable-plugin=NAME], [enable plugin NAME])])
-
-# first check if we are called from default-configure and if not,
-# execute that to parse compiletime settings
-if test -z "$DOSEMU_DEFAULT_CONFIGURE" ; then
-  exec $srcdir/default-configure "$ac_configure_args"
-fi
 
 AC_CONFIG_HEADER(src/include/config.h)
 
@@ -25,6 +15,7 @@ dnl Checks for programs.
 : ${CFLAGS=""}
 AC_PROG_CC
 AC_PROG_CPP
+AC_GNU_SOURCE
 
 if test "$ac_cv_prog_cc_c11" != "no"; then
   AC_DEFINE(HAVE_STD_C11)
@@ -106,13 +97,20 @@ AC_SUBST(x11fontdir)
 AC_SUBST(syshdimagedir)
 AC_SUBST(fdtarball)
 
+AC_DEFINE_DIR([SYSCONFDIR], [sysconfdir], [ System config dir ])
+AC_DEFINE_DIR([CONFSUBDIR], [confdir], [ dosemu-specific config subdir ])
+AC_DEFINE_DIR([DOSEMUPLUGINDIR], [plugindir], [ Directory for dosemu plugins ])
+AC_DEFINE_DIR([DATADIR], [datadir], [Where data are placed to.])
+AC_DEFINE_DIR([DOSEMUHDIMAGE_DEFAULT], [syshdimagedir], [ Directory for dosemu hdimages ])
+AC_DEFINE_DIR([SYSTEM_XFONTS_PATH], [x11fontdir], [ Directory for x11 fonts ])
+
 CONFIG_HOST='linux'
 AC_SUBST(CONFIG_HOST)
 
 DOSEMU_CFLAGS="-Wall -Wstrict-prototypes -Wmissing-declarations \
 -Wnested-externs -fms-extensions -pthread -imacros config.h \
--Wno-unused-result"
-DOSEMU_LDFLAGS="-Wl,-warn-common -pthread"
+-Wno-unused-result -fpie"
+DOSEMU_LDFLAGS="-Wl,-warn-common -pthread -pie"
 AC_CHECK_LIB(m, pow)
 
 AC_ARG_ENABLE(dlplugins,
@@ -164,47 +162,46 @@ CONFIG_TIME=`date +"%F %T %z"`
 AC_DEFINE_UNQUOTED(CONFIG_HOST, "$CONFIG_HOST")
 AC_DEFINE_UNQUOTED(CONFIG_TIME, "$CONFIG_TIME")
 
-REQUIRED="commands tools/periph"
-
 dnl enable EXPERIMENTAL stuff
- AC_ARG_ENABLE(experimental,
-               AS_HELP_STRING([--enable-experimental], [enable configuration of EXPERIMENTAL stuff]))
-  if test "$enable_experimental" = "yes"; then
-   AC_MSG_NOTICE(Allowing EXPERIMENTAL stuff to be configured...);
-   AC_DEFINE([EXPERIMENTAL], 1, [ Define this to enable experimental stuff ])
-  else
-   AC_MSG_NOTICE(EXPERIMENTAL stuff disabled...);
-  fi
+AC_ARG_ENABLE(experimental,
+              AS_HELP_STRING([--enable-experimental], [enable configuration of EXPERIMENTAL stuff]))
+if test "$enable_experimental" = "yes"; then
+  AC_MSG_NOTICE(Allowing EXPERIMENTAL stuff to be configured...);
+  AC_DEFINE([EXPERIMENTAL], 1, [ Define this to enable experimental stuff ])
+else
+  AC_MSG_NOTICE(EXPERIMENTAL stuff disabled...);
+fi
 
 dnl try to hook in available plug-ins
-$srcdir/mkpluginhooks
-if test -f plugin_libdirs; then
-    PLUGINSUBDIRS=`cat plugin_libdirs`
-    for i in $PLUGINSUBDIRS; do
-      if ! grep USE_DL_PLUGINS $srcdir/src/$i/Makefile >/dev/null ; then
-        ST_PLUGINSUBDIRS="$ST_PLUGINSUBDIRS $i"
-      fi
-    done
-    if test -f plugin_incdirs; then
-      PLUGININCDIRS=`cat plugin_incdirs`
-      for i in $PLUGININCDIRS; do
-        for j in $srcdir/src/$i/*.h; do
-          case $srcdir in
-            /*)
-              $LN_S $j src/plugin/include/`basename $j`;;
-            *)
-              if test 'ln -s' = "$LN_S" ; then
-                ln -s ../../../$j src/plugin/include/`basename $j`
-              else
-                $LN_S $j src/plugin/include/`basename $j`
-              fi;;
-          esac
-        done
-      done
-    fi
-else
-    AC_MSG_NOTICE(Compiling without plug-ins...)
+AC_ARG_ENABLE(plugins,
+              AS_HELP_STRING([--enable-plugins=list],
+              [comma-separated list of plugins, use + to append]))
+def_plugins=`cat $srcdir/plugin_list | sed 's/$/,/g' | tr -d '\n' | sed 's/,$//'`
+if test -z "$enable_plugins"; then
+    enable_plugins="$def_plugins"
 fi
+if test "${enable_plugins#\+}" != "$enable_plugins"; then
+    enable_plugins="$def_plugins,${enable_plugins#\+}"
+fi
+if test "$enable_plugins" = "no"; then
+    enable_plugins=""
+fi
+AC_MSG_NOTICE([Creating plug-in hooks...])
+PLUGINSUBDIRS=
+ST_PLUGINSUBDIRS=
+saved_IFS=$IFS
+IFS=","
+for i in $enable_plugins; do
+    if test -z "$i"; then continue; fi
+    if $srcdir/mkpluginhooks enable $i yes ; then
+        PLUGINSUBDIRS="$PLUGINSUBDIRS plugin/$i"
+        if ! grep USE_DL_PLUGINS $srcdir/src/plugin/$i/Makefile >/dev/null ; then
+            ST_PLUGINSUBDIRS="$ST_PLUGINSUBDIRS plugin/$i"
+        fi
+    fi
+done
+IFS=$saved_IFS
+$srcdir/mkpluginhooks
 
 AC_ARG_ENABLE(system_wa,
   AS_HELP_STRING([--disable-system-wa], [compile without system-specific
@@ -254,9 +251,10 @@ AC_SUBST(OPTIONALSUBDIRS)
 AC_SUBST(REQUIRED)
 AC_SUBST(PLUGINSUBDIRS)
 AC_SUBST(ST_PLUGINSUBDIRS)
+RELEASE_DATE=`cd $srcdir && ./getversion -d`
+AC_SUBST(RELEASE_DATE)
 
 dnl Now CFLAGS and INCLUDES
-
 INCDIR="-I\${top_builddir}/src/include -I\${top_builddir}/src/plugin/include"
 AC_SUBST(INCDIR)
 
@@ -333,20 +331,31 @@ AC_DEFINE_UNQUOTED(CMDS_SUFF, "$cmdsuff")
 AC_SUBST(cmdsuff)
 
 dnl Create output files. If you add new ones, please do it in order.
-
-AC_CONFIG_FILES([Makefile.conf])
+man_files=`cd $srcdir && find man -name '*.in' | sed 's/\.in$//'`
+AC_DEFUN([AC_DATAROOTDIR_CHECKED])
+AC_CONFIG_FILES([Makefile.conf $PACKAGE_NAME.spec $man_files])
 
 AC_CONFIG_COMMANDS([Makefile],
 [ AC_PROG_LN_S
   if ! test -f configure.ac; then
+    wd=`pwd`
     abssrcdir=`cd $srcdir && pwd`
-    mkdir -p `(cd $abssrcdir; find . -name .git -prune -o -name .svn -prune -o -name CVS -prune -o -type d -print)`
-    for i in `(cd $abssrcdir; find . -name Makefile)`; do
-      echo  $LN_S -f $abssrcdir/$i $i
-      $LN_S -f $abssrcdir/$i $i
+    if test "${wd#$abssrcdir}" != "$wd" ; then
+      builddir=".${wd#$abssrcdir}"
+    else
+      builddir="$wd"
+    fi
+    mkdir -p `(cd $abssrcdir; find doc man etc src -path src/lib -prune -o -type d -print)`
+    for i in `(cd $abssrcdir; find . -path $builddir -prune -o -name Makefile -print)`; do
+      echo  $LN_S -f $abssrcdir/${i#./} $i
+      $LN_S -f $abssrcdir/${i#./} $i
     done
-    $LN_S -f $abssrcdir/configure.ac configure.ac
-    $LN_S -f $abssrcdir/configure configure
+    for i in README.bindist NEWS THANKS BUGS; do
+	cp $abssrcdir/$i $i
+    done
+    for i in `(cd $abssrcdir; find man -name '*.1')`; do
+	cp $abssrcdir/$i $i
+    done
   fi
 ])
 

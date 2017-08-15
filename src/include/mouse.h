@@ -35,9 +35,7 @@
 #define DELTA_RIGHTBUP		16
 #define DELTA_MIDDLEBDOWN  32
 #define DELTA_MIDDLEBUP    64
-
-#define MICKEY			9	/* mickeys per move */
-#define M_DELTA			8
+#define DELTA_WHEEL		128
 
 #define HEIGHT 16
 #define PLANES 4
@@ -73,10 +71,12 @@ struct mouse_struct {
   unsigned char oldlbutton, oldmbutton, oldrbutton;
 
   int lpcount, lrcount, mpcount, mrcount, rpcount, rrcount;
+  int16_t wmcount;
 
   /* positions for last press/release for each button */
   int lpx, lpy, mpx, mpy, rpx, rpy;
   int lrx, lry, mrx, mry, rrx, rry;
+  int wmx, wmy;
 
   /* TRUE if we're in a graphics mode */
   boolean gfx_cursor;
@@ -153,7 +153,7 @@ void mouse_client_post_init(void);
 
 extern struct mouse_client Mouse_raw;
 
-#include "keyboard.h"
+#include "keyboard/keyboard.h"
 void mouse_keyboard(Boolean make, t_keysym key);
 
 extern void mouse_priv_init(void);
@@ -174,6 +174,7 @@ struct mouse_drv {
   int  (*init)(void);
   int  (*accepts)(void *udata);
   void (*move_buttons)(int lbutton, int mbutton, int rbutton, void *udata);
+  void (*move_wheel)(int dy, void *udata);
   void (*move_relative)(int dx, int dy, int x_range, int y_range, void *udata);
   void (*move_mickeys)(int dx, int dy, void *udata);
   void (*move_absolute)(int x, int y, int x_range, int y_range, void *udata);
@@ -186,6 +187,7 @@ void register_mouse_driver(struct mouse_drv *mouse);
 void mousedrv_set_udata(const char *name, void *udata);
 
 void mouse_move_buttons(int lbutton, int mbutton, int rbutton);
+void mouse_move_wheel(int dy);
 void mouse_move_relative(int dx, int dy, int x_range, int y_range);
 void mouse_move_mickeys(int dx, int dy);
 void mouse_move_absolute(int x, int y, int x_range, int y_range);
@@ -194,6 +196,7 @@ void mouse_enable_native_cursor(int flag);
 
 void mouse_move_buttons_id(int lbutton, int mbutton, int rbutton,
 	const char *id);
+void mouse_move_wheel_id(int dy, const char *id);
 void mouse_move_mickeys_id(int dx, int dy, const char *id);
 void mouse_enable_native_cursor_id(int flag, const char *id);
 int mousedrv_accepts(const char *id);

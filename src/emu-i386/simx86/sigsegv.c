@@ -49,8 +49,6 @@
 #include "priv.h"
 #include "mapping.h"
 
-int TryMemRef = 0;
-
 /* ======================================================================= */
 
 unsigned e_VgaRead(unsigned char *a, int mode)
@@ -485,7 +483,7 @@ int e_emu_fault(struct sigcontext *scp)
 #ifdef __x86_64__
   if (_trapno == 0x0e && _cr2 > 0xffffffff)
   {
-    error("Accessing reserved memory at %08lx\n"
+    dosemu_error("Accessing reserved memory at %08lx\n"
 	  "\tMaybe a null segment register\n",_cr2);
     return 0;
   }
@@ -583,7 +581,7 @@ int e_emu_fault(struct sigcontext *scp)
 		_rsp += sizeof(long);
 		return 1;
 	}
-	return TryMemRef;
+	in_vm86 = 0;
   }
 #endif
   return 0;

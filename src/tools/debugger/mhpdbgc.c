@@ -72,6 +72,8 @@ static void mhp_go      (int, char *[]);
 static void mhp_stop    (int, char *[]);
 static void mhp_trace   (int, char *[]);
 static void mhp_tracec  (int, char *[]);
+static void mhp_tracefileopen (int, char *[]);
+static void mhp_tracefileclose(int, char *[]);
 static void mhp_regs32  (int, char *[]);
 static void mhp_bp      (int, char *[]);
 static void mhp_bc      (int, char *[]);
@@ -133,6 +135,8 @@ static const struct cmd_db cmdtab[] = {
    {"t",             mhp_trace},
    {"ti",            mhp_trace},
    {"tc",            mhp_tracec},
+   {"tfo",           mhp_tracefileopen},
+   {"tfc",           mhp_tracefileclose},
    {"r32",           mhp_regs32},
    {"bp",            mhp_bp},
    {"bc",            mhp_bc},
@@ -175,6 +179,8 @@ static const char help_page[]=
   "t                      single step\n"
   "ti                     single step into interrupt\n"
   "tc                     single step, loop forever until key pressed\n"
+  "tfo FILE               capture traces to a file\n"
+  "tfc                    close the trace file\n"
   "r32                    dump regs in 32 bit format\n"
   "bp addr                set int3 style breakpoint\n"
   "bc n                   clear breakpoint #n (as listed by bl)\n"
@@ -607,15 +613,52 @@ static void mhp_trace(int argc, char * argv[])
    }
 }
 
-static void mhp_tracec(int argc, char * argv[])
+static void mhp_tracec(int argc, char *argv[])
 {
-   if (!mhpdbgc.stopped) {
-      mhp_printf("must be in stopped state\n");
-   } else {
-     mhp_trace (argc, argv);
-     traceloop=1;
-     strcpy(loopbuf,"t");
-   }
+  if (!mhpdbgc.stopped) {
+    mhp_printf("must be in stopped state\n");
+    return;
+  }
+
+  if (mhpdbg.tracefd == -1) {
+    mhp_printf("must have tracefile defined\n");
+    return;
+  }
+
+  mhp_printf("press any key to stop tracing\n");
+  mhp_send();
+
+  mhp_trace(argc, argv);
+  traceloop = 1;
+  strcpy(loopbuf, "t");
+}
+
+static void mhp_tracefileopen(int argc, char *argv[])
+{
+  if (mhpdbg.tracefd != -1) {
+    mhp_printf("tracefile already open\n");
+    return;
+  }
+
+  if (mhpdbg.recvfd == -1) {
+    mhp_printf("tracefile descriptor invalid\n");
+    return;
+  }
+
+  /* grab the file descriptor */
+  mhpdbg.tracefd = mhpdbg.recvfd;
+  mhpdbg.recvfd = -1;
+
+  if (argc > 1)
+    mhp_printf("tracefile name is '%s'\n", argv[1]);
+  else
+    mhp_printf("tracefile opened\n");
+}
+
+static void mhp_tracefileclose(int argc, char *argv[])
+{
+  mhpdbg.tracefd = -1;
+  mhp_printf("tracefile has been closed\n");
 }
 
 static void mhp_dump(int argc, char * argv[])

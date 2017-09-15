@@ -25,6 +25,7 @@
 #include <signal.h>
 #include <assert.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <readline/readline.h>
 #include <readline/history.h>
 
@@ -40,9 +41,17 @@
 
 int kill_timeout=FOREVER;
 int fd;
+int fd_tracefile = -1;
 
 int running;
 const char *prompt = "dosdebug> ";
+
+enum {NOTHING, STDCMD, FILEDESC};
+
+struct msghdr msgh;
+struct iovec iov[1];
+#define CMSG_SIZE CMSG_SPACE(sizeof(int))
+char mbuf[CMSG_SIZE];
 
 
 static int find_dosemu_sockets(char **sktnames, int max)
@@ -97,6 +106,8 @@ typedef struct {
 static rl_icpfunc_t db_help;
 static rl_icpfunc_t db_quit;
 static rl_icpfunc_t db_kill;
+static rl_icpfunc_t db_tracefileopen;
+static rl_icpfunc_t db_tracefileclose;
 
 static COMMAND cmds[] = {
     {"r", NULL, "                      show regs\n"},
@@ -127,6 +138,8 @@ static COMMAND cmds[] = {
     {"ti", NULL, "                     single step into interrupt\n"},
     {"tc", NULL,
      "                     single step, loop forever until key pressed\n"},
+    {"tfo", db_tracefileopen, "FILE                capture traces to a file\n"},
+    {"tfc", db_tracefileclose, "                    close the trace file\n"},
     {"bl", NULL, "                     list active breakpoints\n"},
     {"bp", NULL, "ADDR                 set int3 style breakpoint\n"},
     {"bc", NULL, "n                    clear breakpoint #n (as listed by bl)\n"},
@@ -224,19 +237,112 @@ static int db_help(char *line) {
   }
 
   fflush(rl_outstream);
-  return 0;
+  return NOTHING;
 }
 
 static int db_quit(char *line) {
   fputs("\nquit\n", rl_outstream);
   fflush(rl_outstream);
   running = 0;
-  return 0;
+  if (fd_tracefile >= 0)
+    close(fd_tracefile);
+  return NOTHING;
 }
 
 static int db_kill(char *line) {
   kill_timeout = KILL_TIMEOUT;
-  return 0;
+  if (fd_tracefile >= 0)
+    close(fd_tracefile);
+  return NOTHING;
+}
+
+static int db_tracefileopen(char *line)
+{
+  char *fn,*p;
+  struct cmsghdr *h;
+  struct stat st;
+
+  fn = line + 3;
+  while(isspace(*fn))
+    fn++;
+
+  p = strchr(fn, ' ');
+  if (p)
+    *p = '\0';
+  p = strchr(fn, '\r');
+  if (p)
+    *p = '\0';
+  p = strchr(fn, '\n');
+  if (p)
+    *p = '\0';
+
+  if (strlen(fn) == 0) {
+    fprintf(rl_outstream, "\nError: no filename supplied\n");
+    fflush(rl_outstream);
+    return NOTHING;
+  }
+
+  if (stat(fn, &st) == 0) {
+    fprintf(rl_outstream, "\nError: filename '%s' already exists\n", fn);
+    fflush(rl_outstream);
+    return NOTHING;
+  }
+
+  if (fd_tracefile >= 0) {
+    fprintf(rl_outstream, "\nError: trace file already open\n");
+    fflush(rl_outstream);
+    return NOTHING;
+  }
+
+  fd_tracefile = open(fn, O_RDWR | O_CREAT | O_TRUNC, 0666);
+  if (fd_tracefile < 0) {
+    fprintf(rl_outstream, "\nError: could not open file '%s'\n", fn);
+    fflush(rl_outstream);
+    return NOTHING;
+  }
+
+  /* file is now open, now pass the descriptor to dosemu */
+  memset(&iov[0], 0, sizeof iov[0]);
+  memset(&msgh, 0, sizeof msgh);
+  memset(mbuf, 0, CMSG_SIZE);
+
+  msgh.msg_name = NULL;
+  msgh.msg_namelen = 0;
+
+  msgh.msg_iov = iov;
+  msgh.msg_iovlen = 1;
+
+  msgh.msg_control = mbuf;
+  msgh.msg_controllen = CMSG_SIZE;
+  msgh.msg_flags = 0;
+
+  /* Message to be sent */
+  iov[0].iov_base = (void *)line;
+  iov[0].iov_len = strlen(line);
+
+  /* Control data */
+  h = CMSG_FIRSTHDR(&msgh);
+  h->cmsg_len = CMSG_LEN(sizeof(int));
+  h->cmsg_level = SOL_SOCKET;
+  h->cmsg_type = SCM_RIGHTS;
+  ((int *)CMSG_DATA(h))[0] = fd_tracefile;
+
+  return FILEDESC;
+}
+
+static int db_tracefileclose(char *line)
+{
+  if (fd_tracefile == -1) {
+    fprintf(rl_outstream, "\nError: trace file already closed\n");
+    fflush(rl_outstream);
+    return NOTHING;
+  }
+
+  close(fd_tracefile);
+  fd_tracefile = -1;
+
+  line[4] = '\0'; // pass no args to dosemu
+  return STDCMD;
 }
 
 /*
@@ -246,7 +352,7 @@ static int db_kill(char *line) {
 static void handle_console_input (char *line)
 {
   static char *last_line = NULL;
-  int len;
+  int len, rsp;
   COMMAND *cmd;
 
   if (!line) {
@@ -286,15 +392,27 @@ static void handle_console_input (char *line)
 
   /* Maybe it's implemented locally */
   if (cmd->func) {
-    cmd->func(line);
-    free(line);
-    return;
-  }
+    rsp = cmd->func(line);
+    if (rsp == NOTHING) {  /* command satified the request fully */
+      free(line);
+      return;
+    }
+  } else
+    rsp = STDCMD;
 
   /* Pass to dosemu */
-  len = strlen(line);
-  if (write(fd, line, len) != len) {
-    fprintf(stderr, "Write to socket failed\n");
+  switch (rsp) {
+    case STDCMD: /* just pass string */
+      len = strlen(line);
+      if (write(fd, line, len) != len) {
+        fprintf(stderr, "Write to socket failed\n");
+      }
+      break;
+    case FILEDESC: /* file descriptor */
+      if (sendmsg(fd, &msgh, 0) < 0) {
+        fprintf(stderr, "Sendmsg to socket failed\n");
+      }
+      break;
   }
   free(line);
 }

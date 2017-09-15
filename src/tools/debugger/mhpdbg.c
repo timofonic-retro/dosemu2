@@ -87,14 +87,15 @@ void mhp_putc(char c1)
 
 void mhp_send(void)
 {
-   if ((mhpdbg.sendptr) && (mhpdbg.fd == -1)) {
-      mhpdbg.sendptr = 0;
-      return;
-   }
-   if ((mhpdbg.sendptr) && (mhpdbg.fd != -1)) {
-      write (mhpdbg.fd, mhpdbg.sendbuf, mhpdbg.sendptr);
-      mhpdbg.sendptr = 0;
-   }
+  if (mhpdbg.sendptr) {
+    if (mhpdbg.tracefd != -1)
+      write(mhpdbg.tracefd, mhpdbg.sendbuf, mhpdbg.sendptr);
+
+    if ((mhpdbg.fd != -1) && (!traceloop))
+      write(mhpdbg.fd, mhpdbg.sendbuf, mhpdbg.sendptr);
+
+    mhpdbg.sendptr = 0;
+  }
 }
 
 void mhp_close(void)
@@ -184,6 +185,7 @@ static void mhp_init(void)
 
   listener_fd = socket(AF_UNIX, SOCK_SEQPACKET, 0);
   mhpdbg.fd = -1;
+  mhpdbg.tracefd = -1;
 
   local.sun_family = AF_UNIX;
 
@@ -239,9 +241,41 @@ static void mhp_init(void)
 
 void mhp_input()
 {
-  if (mhpdbg.fd == -1) return;
-  mhpdbg.nbytes = read(mhpdbg.fd, mhpdbg.recvbuf, SRSIZE);
-  if (mhpdbg.nbytes == -1) return;
+  struct iovec iov[1];
+  struct msghdr msgh;
+  struct cmsghdr *h;
+
+/* Size of the cmsg including one file descriptor */
+#define CMSG_SIZE CMSG_SPACE(sizeof(int))
+  char cmsgbuf[CMSG_SIZE];
+
+  if (mhpdbg.fd == -1)
+    return;
+
+  iov[0].iov_base = mhpdbg.recvbuf;
+  iov[0].iov_len = sizeof(mhpdbg.recvbuf);
+
+  msgh.msg_name = NULL;
+  msgh.msg_namelen = 0;
+
+  msgh.msg_iov = iov;
+  msgh.msg_iovlen = 1;
+
+  msgh.msg_control = cmsgbuf;
+  msgh.msg_controllen = CMSG_SIZE;
+  msgh.msg_flags = 0;
+
+  mhpdbg.nbytes = recvmsg(mhpdbg.fd, &msgh, 0);
+  if (mhpdbg.nbytes == -1)
+    return;
+
+  /* if we received a file descriptor save it for subsequent assignment */
+  h = CMSG_FIRSTHDR(&msgh);
+  if (h && h->cmsg_len == CMSG_LEN(sizeof(int)) &&
+      h->cmsg_level == SOL_SOCKET && h->cmsg_type == SCM_RIGHTS) {
+    mhpdbg.recvfd = ((int *)CMSG_DATA(h))[0];
+  }
+
   if (mhpdbg.nbytes == 0 && !wait_for_debug_terminal) {
     if (mhpdbgc.stopped) {
       mhp_cmd("g");
@@ -250,6 +284,7 @@ void mhp_input()
     mhpdbg.active = 0;
     return;
   }
+
   if (!mhpdbg.active) {
     mhpdbg.active = 1; /* 1 = new session */
   }
@@ -288,9 +323,12 @@ static void mhp_poll_loop(void)
           }
           else break;
         }
-      }
-      else {
-        if (traceloop) { traceloop=loopbuf[0]=0; }
+      } else {
+        if (traceloop) {
+          traceloop = 0;
+          loopbuf[0] = '\0';
+          mhpdbg.nbytes = snprintf(mhpdbg.recvbuf, sizeof mhpdbg.recvbuf, "t");
+        }
       }
       if ((mhpdbg.recvbuf[0] == 'q') && (mhpdbg.recvbuf[1] <= ' ')) {
         if (mhpdbgc.stopped) {

@@ -333,6 +333,9 @@ int main (int argc, char **argv)
     fprintf(stderr, "Dosemu.bin pid is %d\n", dospid);
   }
 
+  /* so that we can use conditional ~/.inputrc commands */
+  rl_readline_name = "dosdebug";
+
   /* Install the readline completion function */
   rl_attempted_completion_function = dosdebug_completion;
 

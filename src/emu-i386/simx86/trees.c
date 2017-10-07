@@ -1257,8 +1257,8 @@ int Tree_InvalidateNodePage(int addr, int len, unsigned char *eip, int *codehit)
 	       call returns to may write to the current unprotected page.
 	    */
 	    if (eip && ADDR_IN_RANGE(eip,G->addr,ahE)) {
-		if (debug_level('e')>1)
-		    e_printf("### Node self hit %p->%p..%p\n",
+//		if (debug_level('e')>1)
+		    error("### Node self hit %p->%p..%p\n",
 			     eip,G->addr,ahE);
 		BreakNode(G, eip, addr);
 	    }

@@ -140,6 +140,8 @@ static void handle_console_input (char *line)
       if (last_cmd)
         free(last_cmd);
       last_cmd = strdup(line);
+      if ((strncmp(last_cmd, "d ", 2) == 0) || (strncmp(last_cmd, "u ", 2) == 0))
+        last_cmd[1] = '\0';
     } else {
       if (last_cmd) {
         free(line);

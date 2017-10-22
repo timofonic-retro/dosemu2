@@ -398,10 +398,6 @@ int main(int argc, char **argv)
 #endif
     timer_interrupt_init();	/* start sending int 8h int signals */
 
-    /* unprotect conventional memory just before booting */
-    mprotect_mapping(MAPPING_LOWMEM, 0, config.mem_size * 1024,
-		     PROT_READ | PROT_WRITE | PROT_EXEC);
-
     can_leavedos = 1;
 
     while (!fatalerr && !config.exitearly) {

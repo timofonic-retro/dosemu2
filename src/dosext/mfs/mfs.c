@@ -3185,15 +3185,56 @@ int dos_mkdir(const char *filename1, int drive, int lfn)
   return 0;
 }
 
-int dos_rename(const char *filename1, const char *filename2, int drive, int lfn)
+int dos_rename(const char *filename1, const char *fname2, int drive, int lfn)
 {
   struct stat st;
   char fpath[PATH_MAX];
   char buf[PATH_MAX];
+  char filename2[PATH_MAX];
+  const char *cp;
+  char fn[9], fe[4], *p;
+  int i, fnl;
 
+  strcpy(filename2, fname2);
   Debug0((dbg_fd, "Rename file fn1=%s fn2=%s\n", filename1, filename2));
   if (drives[drive].read_only)
     return ACCESS_DENIED;
+  cp = strrchr(filename1, '\\');
+  if (!cp)
+    cp = filename1;
+  else
+    cp++;
+  extract_filename(cp, fn, fe);
+  fnl = strlen(fn);
+  p = strrchr(filename2, '\\');
+  if (!p)
+    p = filename2;
+  else
+    p++;
+error("extr %s %s\n", fn, fe);
+error("ren0 %s %s\n", filename1, filename2);
+  for (i = 0; p[i] && p[i] != '.'; i++) {
+error("renx %c ", p[i]);
+    if (p[i] == '?') {
+      if (i < fnl) {
+        p[i] = fn[i];
+      } else {
+        memmove(&p[i], &p[i + 1], strlen(p) - i);
+        i--;
+      }
+    }
+error("@%c\n", p[i]);
+  }
+  if (p[i] && p[i] == '.') {
+    for (i++; p[i]; i++) {
+error("renx %c ", p[i]);
+      if (p[i] == '?') {
+        p[i] = fe[i];
+      }
+error("@%c\n", p[i]);
+    }
+  }
+error("ren1 %s %s\n", filename1, filename2);
   build_ufs_path_(fpath, filename2, drive, !lfn);
   if (find_file(fpath, &st, drive, NULL) || is_dos_device(fpath)) {
     Debug0((dbg_fd,"Rename, %s already exists\n", fpath));
@@ -3207,6 +3248,7 @@ int dos_rename(const char *filename1, const char *filename2, int drive, int lfn)
     return PATH_NOT_FOUND;
   }
 
+error("ren %s %s\n", buf, fpath);
   if (rename(buf, fpath) != 0)
     return PATH_NOT_FOUND;
 

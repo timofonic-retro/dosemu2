@@ -1,5 +1,7 @@
 #! /bin/sh
 
+DOSEMU_DEFAULT_CONFIGURE="$0"
+export DOSEMU_DEFAULT_CONFIGURE
 srcdir="`dirname "$0"`"
 CONF_FILE="$srcdir"/compiletime-settings
 
